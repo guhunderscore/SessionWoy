@@ -12,6 +12,7 @@ Entries are grouped by topic, not sorted alphabetically.
 | **ADR 0001** | — | `docs/adr/0001-cookie-swapping.md`. The decision to use *cookie swapping* and the pass/fail criteria (G1–G10), fixed **before** any code was written |
 | **ADR 0002** | — | `docs/adr/0002-poc-result.md`. POC results: test table, findings F1–F6, known limitations, compatibility matrix, and verdict |
 | **ADR 0003** | — | `docs/adr/0003-session-manager-ui.md`. Phase 3 UI decisions: popup + side panel, Svelte instead of React, tab-group colors, persistence split, debug-API gating |
+| **ADR 0004** | — | `docs/adr/0004-persistence-and-backend.md`. Phase 4: encrypted vault, backup file, tab restore after a restart, local backend, reduced mode |
 | **POC** | Proof of Concept | A minimal build to prove that a risky idea actually works before building the full product. Here: can cookies be separated per tab? |
 | **MVP** | Minimum Viable Product | The smallest version of the product that is actually usable (defined in PRD §15) |
 | **Phase 0–6** | — | Delivery stages in PRD §11: 0 research, 1 test server, 2 POC, 3 UI, 4 persistence & backend, 5 compatibility, 6 optional enhancements |
@@ -26,8 +27,8 @@ Entries are grouped by topic, not sorted alphabetically.
 | Code | Meaning | Location |
 | --- | --- | --- |
 | **G-n** (G1–G10) | Go/no-go criteria | ADR 0001 |
-| **S-n** (S1–S21) | End-to-end test scenarios; one-to-one with the results tables | S1–S15: `e2e/tests/poc.spec.ts`, ADR 0002; S16–S21: `e2e/tests/ui.spec.ts`, ADR 0003 |
-| **D-n** (D1–D8) | Decisions in an ADR | ADR 0003 |
+| **S-n** (S1–S27) | End-to-end test scenarios; one-to-one with the results tables | S1–S15: `e2e/tests/poc.spec.ts`, ADR 0002; S16–S21: `e2e/tests/ui.spec.ts`, ADR 0003; S22–S27: `e2e/tests/persistence.spec.ts`, ADR 0004 |
+| **D-n** | Decisions in an ADR (numbered per ADR) | ADR 0003 (D1–D8), ADR 0004 (D1–D7) |
 | **F-n** (F1–F8) | Technical findings (e.g. F3 = redirect race, F6 = session inheritance bug, F7 = orphaned content scripts after an extension reload, F8 = session applied on a site without host access) | F1–F6: ADR 0002; F7–F8: ADR 0003 |
 | **FR-n** | Functional Requirement | PRD §5 |
 | **NFR** | Non-Functional Requirement: quality targets (speed, security, reliability) | PRD §6 |
@@ -56,6 +57,15 @@ Entries are grouped by topic, not sorted alphabetically.
 | **Redirect race** | When a server sends `Set-Cookie` on a `302` redirect and Chrome follows the redirect before the cookie rules are updated |
 | **Snapshot cache** | A copy of the session's script-visible cookies in `sessionStorage`, so `document.cookie` has an immediate answer when a page reloads |
 | **Debug API** | Test-only functions in the service worker (`globalThis.sessionwoy`). Present only in the e2e build (`__E2E__`), stripped from the release build |
+| **Vault** | The encrypted store of saved logins in `chrome.storage.local`: one AES-256-GCM ciphertext per session, unlocked with the passphrase |
+| **Passphrase** | The user's secret from which the vault key is derived (PBKDF2). Entered once per Chrome start; never stored. A forgotten passphrase cannot be recovered (only the saved logins are lost) |
+| **Locked / Unlocked** | Vault states after setup. *Locked* (after a Chrome restart or "Lock now"): saved logins cannot be read and session tabs run logged out. *Unlocked*: logins are loaded and saved |
+| **Forget saved logins** | Wipes the vault (e.g. lost passphrase); sessions and current in-memory logins stay |
+| **Backup file** | `sessionwoy-backup-YYYY-MM-DD.json`: sessions and logins, fully encrypted with a passphrase chosen at export |
+| **Tab marker** | A random id per session tab, kept in the page's `sessionStorage` and in a durable list, so a tab Chrome restores after a restart can rejoin its session |
+| **Restore window** | The 90 seconds after Chrome starts (or the extension reloads) during which restored tabs may rejoin their sessions; afterwards unmatched tabs are reported |
+| **Reduced mode** | Behavior when the backend is unreachable: everything keeps working locally, changes wait (durably) and are retried every minute (FR-20) |
+| **Remote differs** | The backend holds another device's (or passphrase's) logins; nothing is pushed until the user restores from it or explicitly replaces it |
 
 ## 4. Web and browser
 
@@ -117,16 +127,21 @@ Entries are grouped by topic, not sorted alphabetically.
 | **Fastify** | — | Node.js web framework for the test server and the backend |
 | **Docker / Docker Compose** | — | Runs services in containers. Service `app` = test server (port 3003), `backend` = Phase 4 API (port 3004) |
 | **CDP** | Chrome DevTools Protocol | Chrome's control channel used by automated tests, e.g. to stop the service worker (S10) |
-| **npm workspaces** | — | One repo containing several packages: `extension`, `test-server`, `e2e` |
-| **SQLite** | — | File-based database, planned for the Phase 4 backend |
+| **npm workspaces** | — | One repo containing several packages: `extension`, `test-server`, `backend`, `e2e` |
+| **SQLite / better-sqlite3** | — | File-based database used by the backend (`session_data` volume), via the `better-sqlite3` Node library |
+| **Zod** | — | Schema validation library; the backend validates every request body with it |
+| **Migration** | — | A numbered SQL file (`backend/migrations/NNN_name.sql`) applied once to create or change the database schema |
+| **Bearer secret / `API_SECRET`** | — | The random value in `.env` that the extension sends as `Authorization: Bearer …` to the backend |
 
 ## 7. Security and measurement
 
 | Term | Stands for | Meaning |
 | --- | --- | --- |
-| **AES-256-GCM** | Advanced Encryption Standard, 256-bit, Galois/Counter Mode | Encryption algorithm planned for storing cookies securely (Phase 4) |
-| **PBKDF2** | Password-Based Key Derivation Function 2 | Derives an encryption key from the user's passphrase |
-| **Ciphertext** | — | Encrypted data. The Phase 4 backend stores ciphertext only |
+| **AES-256-GCM** | Advanced Encryption Standard, 256-bit, Galois/Counter Mode | Encryption used for saved logins, backup files and everything sent to the backend; also detects tampering |
+| **PBKDF2** | Password-Based Key Derivation Function 2 | Derives the encryption key from the passphrase (SHA-256, 600,000 iterations, random salt) |
+| **Salt / IV** | — | Random values that make each key (salt) and each encryption (IV) unique; not secret |
+| **Ciphertext** | — | Encrypted data. The vault, backup files and the backend hold ciphertext only |
+| **Key version** | — | Counter raised on every passphrase change; the backend drops payloads encrypted under an older key |
 | **p50 / p95** | 50th / 95th percentile | p95 = 95% of requests are faster than this value. Used to measure added latency (S14) |
 | **Latency** | — | The delay of a request |
 | **Stress test** | — | A load test with a very large number of requests at once (S2: 10,000 requests per tab) |

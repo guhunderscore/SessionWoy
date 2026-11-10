@@ -7,7 +7,7 @@
 //   add --watch to rebuild on change
 import { build, context } from 'esbuild';
 import sveltePlugin from 'esbuild-svelte';
-import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 const watch = process.argv.includes('--watch');
 const e2e = process.argv.includes('--e2e');
@@ -18,6 +18,14 @@ mkdirSync(outdir, { recursive: true });
 cpSync('public', outdir, { recursive: true });
 cpSync('src/ui/popup/popup.html', `${outdir}/popup.html`);
 cpSync('src/ui/sidepanel/sidepanel.html', `${outdir}/sidepanel.html`);
+
+if (e2e) {
+  // Playwright cannot click Chrome's permission prompt; the test build pre-grants loopback (any port)
+  // so the test backend (127.0.0.1:3014) is reachable. The release build asks at runtime (ADR 0004).
+  const manifest = JSON.parse(readFileSync(`${outdir}/manifest.json`, 'utf8'));
+  manifest.host_permissions = [...new Set([...manifest.host_permissions, 'http://127.0.0.1/*'])];
+  writeFileSync(`${outdir}/manifest.json`, JSON.stringify(manifest, null, 2));
+}
 
 const common = {
   bundle: true,

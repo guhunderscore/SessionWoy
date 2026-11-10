@@ -42,6 +42,8 @@ export interface SessionWoyDebug {
   }>;
   diag(): Promise<Record<string, unknown> & { rules: { avgMs: number; maxMs: number; updates: number } }>;
   setInheritOnOpen(v: boolean): Promise<void>;
+  /** Ends the FR-17 restore window immediately. */
+  endRestoreWindow(): Promise<void>;
 }
 
 /** The extension handle of the running test (workers: 1), used by gotoJson to wait for heals. */
@@ -117,15 +119,32 @@ export class Ext {
   }
 }
 
+/**
+ * Launches Chromium with the extension. Pass the same `userDataDir` twice to simulate a browser
+ * restart (chrome.storage.local survives, chrome.storage.session does not). '' = throwaway profile.
+ */
+export function launchBrowser(userDataDir = '', extraArgs: string[] = []): Promise<BrowserContext> {
+  return chromium.launchPersistentContext(userDataDir, {
+    channel: 'chromium', // bundled Chromium: branded Chrome ignores --load-extension
+    headless: !process.env.HEADED,
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3003',
+    args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`, ...extraArgs],
+  });
+}
+
+/** Extension handle for a context launched with `launchBrowser` (outside the default fixtures). */
+export async function extFor(context: BrowserContext): Promise<Ext> {
+  const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+  const ext = new Ext(context, { current: sw });
+  await ext.call(() => sessionwoy.ready(), null);
+  activeExt = ext;
+  return ext;
+}
+
 export const test = base.extend<Fixtures>({
   // eslint-disable-next-line no-empty-pattern
   context: async ({}, use) => {
-    const context = await chromium.launchPersistentContext('', {
-      channel: 'chromium', // bundled Chromium: branded Chrome ignores --load-extension
-      headless: !process.env.HEADED,
-      baseURL: process.env.BASE_URL ?? 'http://localhost:3003',
-      args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
-    });
+    const context = await launchBrowser();
     await use(context);
     await context.close();
   },

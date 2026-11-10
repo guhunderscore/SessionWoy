@@ -3,19 +3,20 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Per-tab named cookie sessions for Chrome (MV3) — Phase 0–2 proof of concept",
+  "description": "Per-tab named cookie sessions for Chrome (MV3), with encrypted persistence and an optional local backend",
   "workspaces": [
     "test-server",
     "extension",
+    "backend",
     "e2e"
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "npm run build -w extension && npm run build -w test-server",
-    "test": "npm test -w test-server && npm test -w extension",
-    "test:e2e": "npm run build:e2e -w extension && npm test -w e2e",
+    "build": "npm run build -w extension && npm run build -w test-server && npm run build -w backend",
+    "test": "npm test -w test-server && npm test -w extension && npm test -w backend",
+    "test:e2e": "npm run build:e2e -w extension && npm run build -w backend && npm test -w e2e",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write ."

@@ -8,8 +8,13 @@
   import { nextColor, type SessionColor, type Settings } from '../../shared/sessions.js';
   import { api, onChanged } from '../api.js';
   import ModeToggle from '../components/ModeToggle.svelte';
+  import RestoreNotice from '../components/RestoreNotice.svelte';
   import NewSessionForm from '../components/NewSessionForm.svelte';
   import Theme from '../components/Theme.svelte';
+  import BackendStatus from '../components/BackendStatus.svelte';
+  import BackendSection from './BackendSection.svelte';
+  import BackupSection from './BackupSection.svelte';
+  import SecuritySection from './SecuritySection.svelte';
   import SessionRow from './SessionRow.svelte';
 
   let st = $state<UiState | null>(null);
@@ -57,7 +62,9 @@
     {#if !creating}<button type="button" class="primary" onclick={() => (creating = true)}>+ New session</button>{/if}
   </header>
 
+  {#if st}<BackendStatus backend={st.backend} />{/if}
   {#if error}<div class="error">{error}</div>{/if}
+  {#if st}<RestoreNotice restore={st.restore} />{/if}
 
   {#if creating && st}
     <section class="card">
@@ -79,6 +86,15 @@
         {#each archived as s (s.id)}<SessionRow session={s} {refreshKey} />{/each}
       </ul>
     {/if}
+
+    <h2>Security</h2>
+    <SecuritySection vault={st.vault} />
+
+    <h2>Backup</h2>
+    <BackupSection vault={st.vault} />
+
+    <h2>Backend</h2>
+    <BackendSection backend={st.backend} vault={st.vault} />
 
     <h2>Settings</h2>
     <section class="card settings">
@@ -104,8 +120,11 @@
 
     <div class="notice">
       <strong>What is separated:</strong> only cookies. localStorage, IndexedDB and a site's Service Worker are
-      still shared between sessions. Cookies are kept in memory only: logins are lost when Chrome restarts or the
-      extension reloads (session names and colors are kept).
+      still shared between sessions.
+      {#if st.vault.state === 'none'}
+        Without a passphrase, logins are kept in memory only and are lost when Chrome restarts or the extension
+        reloads (session names and colors are kept).
+      {/if}
     </div>
 
     <details>

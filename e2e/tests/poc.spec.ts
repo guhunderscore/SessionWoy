@@ -116,7 +116,8 @@ test('S7 duplicated tab inherits the session', async ({ ext, context }) => {
   ]);
   await dup.waitForLoadState();
   await expect.poll(async () => Object.values((await ext.state()).tabs).filter((s) => s === 'A').length).toBe(2);
-  expect((await fetchJson(dup, '/whoami')).identity).toBe('customer');
+  // The duplicate is reloaded after it is assigned (F6), so navigate fresh instead of fetch() in it.
+  expect((await gotoJson(dup, '/whoami')).identity).toBe('customer');
 });
 
 test('S8 unmanaged tab behaves like normal Chrome and does not affect managed tabs', async ({ ext, context }) => {

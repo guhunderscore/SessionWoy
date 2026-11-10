@@ -12,7 +12,7 @@
  * anyway, and its DNR rules are gone), so the page behaves like normal Chrome
  * until it is reloaded. See ADR 0003, F7.
  */
-import { TO_MAIN, TO_RELAY, type ContentMessage, type MainToRelay, type Snapshot } from '../shared/messages.js';
+import { TAB_MARKER_KEY, TO_MAIN, TO_RELAY, type ContentMessage, type MainToRelay, type Snapshot } from '../shared/messages.js';
 import { clearSessionFavicon, setSessionFavicon } from './favicon.js';
 
 let alive = true;
@@ -54,6 +54,31 @@ async function send(msg: ContentMessage): Promise<unknown> {
   }
 }
 
+const isTopFrame = (() => {
+  try {
+    return window.top === window;
+  } catch {
+    return false;
+  }
+})();
+
+function readMarker(): string | null {
+  try {
+    return sessionStorage.getItem(TAB_MARKER_KEY);
+  } catch {
+    return null; // storage disabled / sandboxed frame
+  }
+}
+
+function writeMarker(marker: string | null): void {
+  try {
+    if (marker) sessionStorage.setItem(TAB_MARKER_KEY, marker);
+    else sessionStorage.removeItem(TAB_MARKER_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 async function refresh(): Promise<void> {
   const snap = (await send({ type: 'snapshot:get' })) as Snapshot | undefined;
   if (!snap || !alive) return;
@@ -61,6 +86,19 @@ async function refresh(): Promise<void> {
   // Favicon dot in the session color (top frame only; see favicon.ts).
   if (snap.managed && snap.color) setSessionFavicon(snap.color);
   else clearSessionFavicon();
+
+  // FR-17 tab marker (top frame only): keep it while in a session; when the tab has no session,
+  // a remembered marker may let a restored tab rejoin its session (worker decides, once).
+  if (!isTopFrame) return;
+  if (snap.managed) {
+    if (snap.marker) writeMarker(snap.marker);
+    return;
+  }
+  const marker = readMarker();
+  if (!marker) return;
+  const r = (await send({ type: 'tab:restore', marker })) as { restored?: boolean } | undefined;
+  // Not restored (window closed, unknown marker, tab left its session on purpose): never retry.
+  if (!r?.restored) writeMarker(null);
 }
 
 function onRelay(e: Event): void {

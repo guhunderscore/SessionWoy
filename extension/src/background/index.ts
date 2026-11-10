@@ -6,12 +6,23 @@
  * whose first task is `init()` (state rehydration + full rule rebuild).
  */
 import { buildSessionRules, type RuleSpec } from '../shared/rules.js';
-import { UI_CHANGED, type ContentMessage, type Snapshot, type UiMessage, type UiResult, type UiState } from '../shared/messages.js';
+import { backupFileName, createBackup, readBackup } from '../shared/backup.js';
+import {
+  UI_CHANGED,
+  type ContentMessage,
+  type ExportResult,
+  type ImportPreview,
+  type Snapshot,
+  type UiMessage,
+  type UiResult,
+  type UiState,
+} from '../shared/messages.js';
 import {
   COLOR_HEX,
   badgeText,
   isGroupingMode,
   isSessionColor,
+  normalizeMeta,
   summarizeCookies,
   validateName,
   type SessionMeta,
@@ -26,13 +37,23 @@ import {
   removeFromSessionGroup,
   ungroupAllTabs,
 } from './groups.js';
+import { CookieJar, mergeCookies, type StoredCookie } from '../shared/cookieJar.js';
 import { serial } from './serial.js';
 import { Store } from './state.js';
+import { BackendSync, normalizeBackendUrl } from './backend.js';
+import { TabMarkers } from './restore.js';
+import { Vault, chromeArea, chromeVaultStorage } from './vault.js';
 
 /** Replaced at build time: true only in the e2e build (`node build.mjs --e2e`). */
 declare const __E2E__: boolean;
 
 const store = new Store();
+/** Encrypted cookie persistence (FR-15, ADR 0004). */
+const vault = new Vault(chromeVaultStorage());
+/** Tab restore markers (FR-17, ADR 0004). */
+const markers = new TabMarkers(chromeArea(chrome.storage.local), chromeArea(chrome.storage.session));
+/** Optional local backend sync (FR-18/20/21, ADR 0004). */
+const backend = new BackendSync(chromeArea(chrome.storage.local));
 
 const diag = {
   workerStartedAt: Date.now(),
@@ -53,6 +74,8 @@ const diag = {
   setCookieDiscardedStale: 0,
   healed: 0,
   healSkipped: 0,
+  /** Tabs that rejoined their session after a browser restart (FR-17). */
+  restoredTabsFromMarker: 0,
 };
 
 /** True once init() has rehydrated state; before that, synchronous listeners must not judge staleness. */
@@ -162,10 +185,23 @@ async function assign(tabId: number, sessionId: string | null): Promise<void> {
   if (prev) await rebuild(prev);
   if (sessionId) await addToSessionGroup(store, tabId, sessionId);
   else if (prev) await removeFromSessionGroup(store, tabId, prev);
+  // FR-17: remember (or forget) this tab's session for a later browser restart.
+  if (sessionId) await markers.track(tabId, sessionId, await tabOrigin(tabId), Date.now());
+  else await markers.forget(tabId);
   await store.save();
   await paintBadge(tabId);
   chrome.tabs.sendMessage(tabId, { type: 'session:changed' }).catch(() => undefined);
   broadcastUi();
+}
+
+async function tabOrigin(tabId: number): Promise<string | null> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = tab.pendingUrl ?? tab.url ?? '';
+    return /^https?:\/\//.test(url) ? new URL(url).origin : null;
+  } catch {
+    return null;
+  }
 }
 
 async function forgetTab(tabId: number): Promise<void> {
@@ -183,6 +219,7 @@ async function releaseTabs(sessionId: string): Promise<number[]> {
   for (const tabId of tabs) {
     store.tabs.delete(tabId);
     await removeFromSessionGroup(store, tabId, sessionId);
+    await markers.forget(tabId);
   }
   await rebuild(sessionId);
   for (const tabId of tabs) {
@@ -192,9 +229,220 @@ async function releaseTabs(sessionId: string): Promise<number[]> {
   return tabs;
 }
 
+// ---------------------------------------------------------------- encrypted vault (FR-15, ADR 0004)
+
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Marks a session's cookies for encrypted saving; one debounced write covers bursts of changes. */
+function persistLater(sessionId: string): void {
+  vault.markDirty(sessionId);
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => void run(flushVault), 500);
+}
+
+/** Encrypts and writes dirty sessions (no-op while locked or without a passphrase). */
+async function flushVault(): Promise<string[]> {
+  const ids = await vault.flush((id) => (store.sessions.has(id) ? (store.jars.get(id)?.all() ?? []) : undefined));
+  if (ids.length) {
+    await syncLater(ids); // new ciphertexts go to the backend too (FR-18)
+    broadcastUi();
+  }
+  return ids;
+}
+
+// ---------------------------------------------------------------- local backend (FR-18/20/21, ADR 0004)
+
+let syncTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Queues backend work (`header`, `meta`, `wipe` or session ids) and sends it shortly, debounced. */
+async function syncLater(items: string[]): Promise<void> {
+  if (!backend.settings.enabled) return;
+  await backend.queue(items);
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => void run(syncBackend), 1000);
+}
+
+/** Whether this worker already compared the backend's vault with the local one. */
+let backendVerified = false;
+
+/**
+ * Before the first push of a worker's lifetime: does the backend hold another device's vault?
+ * If so, nothing is pushed until the user restores from it or explicitly replaces it.
+ */
+async function verifyBackend(): Promise<boolean> {
+  if (backendVerified) return true;
+  try {
+    const remote = await backend.pull();
+    backend.setRemoteDiffers(backend.differs(remote, vault.snapshot()));
+    backendVerified = true;
+    return true;
+  } catch {
+    return false; // offline: reduced mode, retried later
+  }
+}
+
+/** Sends pending work, or just checks health. Offline = reduced mode (FR-20): retried every minute. */
+async function syncBackend(): Promise<void> {
+  if (!backend.settings.enabled) return;
+  if (await verifyBackend()) {
+    if (backend.hasPending()) await backend.flush(vault.snapshot(), [...store.sessions.values()]);
+    else await backend.checkHealth();
+  }
+  broadcastUi();
+}
+
+/** Saves session metadata and settings, and mirrors the session list to the backend. */
+async function saveMeta(): Promise<void> {
+  await store.saveDurable();
+  await syncLater(['meta']);
+}
+
+function allSavedIds(): string[] {
+  return Object.keys(vault.snapshot()?.sessions ?? {});
+}
+
+async function configureBackend(patch: { enabled?: unknown; url?: unknown; secret?: unknown }): Promise<void> {
+  const url = patch.url !== undefined ? normalizeBackendUrl(patch.url) : backend.settings.url;
+  if (patch.enabled === true && !(await hasHostAccess(`${url}/`))) {
+    throw new Error(`SessionWoy has no access to ${url}. Allow it when asked, then try again.`);
+  }
+  await backend.configure(patch);
+  backendVerified = false;
+  // Connecting never overwrites what is already there: compare first (see verifyBackend).
+  if (backend.settings.enabled && (await verifyBackend())) await backend.pushAll(vault.snapshot(), [...store.sessions.values()]);
+  broadcastUi();
+}
+
+/** Replaces this device's saved logins with the backend's copy (needs the same passphrase). */
+async function restoreFromBackend(passphrase: unknown): Promise<{ sessions: number }> {
+  if (typeof passphrase !== 'string') throw new Error('Passphrase is required');
+  if (!backend.settings.enabled) throw new Error('Connect the backend first');
+  const remote = await backend.pull();
+  if (!remote.header) throw new Error('The backend has no saved logins yet');
+  const record = {
+    v: 1 as const,
+    kdf: remote.header.kdf,
+    keyVersion: remote.header.keyVersion,
+    check: remote.header.check,
+    sessions: Object.fromEntries(
+      Object.entries(remote.sessions)
+        .filter(([, s]) => s.keyVersion === remote.header!.keyVersion)
+        .map(([id, s]) => [id, { iv: s.iv, ct: s.ct, updatedAt: s.updatedAt }]),
+    ),
+  };
+  const saved = await vault.adopt(record, passphrase);
+  backend.setRemoteDiffers(false); // this device now holds the backend's vault
+  backendVerified = true;
+  // Session list: add the ones this device does not have; newer metadata wins.
+  for (const raw of remote.meta ?? []) {
+    const m = normalizeMeta(raw);
+    if (!m) continue;
+    const local = store.sessions.get(m.id);
+    if (!local || local.updatedAt < m.updatedAt) store.sessions.set(m.id, m);
+  }
+  await saveMeta();
+  await applySavedCookies(saved);
+  return { sessions: Object.keys(saved).length };
+}
+
+function jarsSnapshot(): Record<string, StoredCookie[]> {
+  return Object.fromEntries(
+    [...store.jars].filter(([sid, jar]) => store.sessions.has(sid) && jar.size > 0).map(([sid, jar]) => [sid, jar.all()]),
+  );
+}
+
+/** Puts decrypted cookies back into memory; cookies captured while locked win. Reloads session tabs. */
+async function applySavedCookies(saved: Record<string, StoredCookie[]>): Promise<void> {
+  const now = Date.now();
+  for (const [sid, cookies] of Object.entries(saved)) {
+    if (!store.sessions.has(sid)) {
+      await vault.remove(sid); // orphaned entry (session deleted elsewhere)
+      continue;
+    }
+    store.jars.set(sid, new CookieJar(mergeCookies(store.jar(sid).all(), cookies, now)));
+    await rebuild(sid);
+    notifySession(sid);
+  }
+  // Cookies captured while locked are saved now that the key is available.
+  for (const [sid, jar] of store.jars) if (store.sessions.has(sid) && jar.size) vault.markDirty(sid);
+  await flushVault();
+  await store.save();
+  for (const tabId of store.tabs.keys()) await reloadIfWeb(tabId);
+  broadcastUi();
+}
+
+async function setupVault(passphrase: unknown): Promise<void> {
+  if (typeof passphrase !== 'string') throw new Error('Passphrase is required');
+  await vault.setup(passphrase, jarsSnapshot());
+  await syncLater(['header', 'meta', ...allSavedIds()]);
+  broadcastUi();
+}
+
+async function unlockVault(passphrase: unknown): Promise<void> {
+  if (typeof passphrase !== 'string') throw new Error('Passphrase is required');
+  await applySavedCookies(await vault.unlock(passphrase));
+}
+
+/** Lock now: save, drop the key, and log every session tab out until the next unlock. */
+async function lockVault(): Promise<void> {
+  if (vault.state !== 'unlocked') return;
+  for (const sid of store.jars.keys()) vault.markDirty(sid);
+  await flushVault();
+  await vault.lock();
+  for (const sid of [...store.jars.keys()]) {
+    store.jars.delete(sid);
+    await rebuild(sid);
+    notifySession(sid);
+  }
+  await store.save();
+  for (const tabId of store.tabs.keys()) await reloadIfWeb(tabId);
+  broadcastUi();
+}
+
+// ---------------------------------------------------------------- backup file (FR-19, ADR 0004)
+
+async function exportBackup(passphrase: unknown): Promise<ExportResult> {
+  if (typeof passphrase !== 'string') throw new Error('Passphrase is required');
+  if (vault.state === 'locked') throw new Error('Unlock your saved logins first, so the backup includes them');
+  const file = await createBackup({ sessions: [...store.sessions.values()], cookies: jarsSnapshot() }, passphrase);
+  return { fileName: backupFileName(), data: JSON.stringify(file, null, 2) };
+}
+
+/** Preview (`apply: false`) or apply an import. Same session id = replaced (metadata and cookies). */
+async function importBackup(data: unknown, passphrase: unknown, apply: boolean): Promise<ImportPreview> {
+  if (typeof data !== 'string' || typeof passphrase !== 'string') throw new Error('Choose a backup file and enter its passphrase');
+  if (data.length > 20_000_000) throw new Error('Backup file is too large');
+  if (vault.state === 'locked') throw new Error('Unlock your saved logins first');
+  const content = await readBackup(data, passphrase);
+  const sessions = content.sessions.map((s) => ({
+    id: s.id,
+    name: s.name,
+    cookies: content.cookies[s.id]?.length ?? 0,
+    exists: store.sessions.has(s.id),
+  }));
+  if (!apply) return { sessions };
+  for (const meta of content.sessions) {
+    store.sessions.set(meta.id, meta);
+    store.jars.set(meta.id, new CookieJar(content.cookies[meta.id] ?? []));
+    await rebuild(meta.id);
+    persistLater(meta.id);
+    notifySession(meta.id);
+    await refreshSessionGroups(store, meta.id);
+    for (const tabId of store.tabsOf(meta.id)) {
+      await paintBadge(tabId);
+      await reloadIfWeb(tabId);
+    }
+  }
+  await saveMeta();
+  await store.save();
+  broadcastUi();
+  return { sessions, imported: content.sessions.length };
+}
+
 /** FR-3: clears the session's cookies, keeps its tabs assigned and reloads them. */
 async function resetSession(sessionId: string): Promise<void> {
   store.jar(sessionId).clear();
+  persistLater(sessionId);
   await rebuild(sessionId);
   await store.save();
   notifySession(sessionId);
@@ -212,7 +460,7 @@ async function createSession(name: unknown, color: unknown): Promise<SessionMeta
   const v = validateName(name);
   if (!v.ok) throw new Error(v.error);
   const meta = store.createSession(v.name, isSessionColor(color) ? color : undefined);
-  await store.saveDurable();
+  await saveMeta();
   broadcastUi();
   return meta;
 }
@@ -229,7 +477,7 @@ async function updateSession(id: string, patch: { name?: unknown; color?: unknow
     meta.color = patch.color;
   }
   meta.updatedAt = Date.now();
-  await store.saveDurable();
+  await saveMeta();
   await refreshSessionGroups(store, id);
   for (const tabId of store.tabsOf(id)) await paintBadge(tabId);
   await store.save();
@@ -246,7 +494,7 @@ async function archiveSession(id: string): Promise<void> {
   meta.status = 'archived';
   meta.updatedAt = Date.now();
   await store.save();
-  await store.saveDurable();
+  await saveMeta();
   for (const tabId of tabs) await reloadIfWeb(tabId);
   broadcastUi();
 }
@@ -255,7 +503,7 @@ async function restoreSession(id: string): Promise<void> {
   const meta = requireSession(id);
   meta.status = 'active';
   meta.updatedAt = Date.now();
-  await store.saveDurable();
+  await saveMeta();
   broadcastUi();
 }
 
@@ -265,9 +513,12 @@ async function deleteSession(id: string): Promise<void> {
   const tabs = await releaseTabs(id);
   forgetSessionGroups(store, id);
   store.dropSession(id);
+  await vault.remove(id); // its saved (encrypted) cookies go too
+  await markers.forgetSession(id);
+  await syncLater([id]); // removes its ciphertext from the backend
   await applySessionRules(id, []);
   await store.save();
-  await store.saveDurable();
+  await saveMeta();
   for (const tabId of tabs) await reloadIfWeb(tabId);
   broadcastUi();
 }
@@ -282,7 +533,7 @@ async function updateSettings(patch: { inheritOnOpen?: unknown; grouping?: unkno
     else await ungroupAllTabs(store);
     await store.save();
   }
-  await store.saveDurable();
+  await saveMeta();
   broadcastUi();
 }
 
@@ -310,6 +561,7 @@ async function purgeAll(): Promise<void> {
   for (const [sid, jar] of store.jars) {
     if (jar.purgeExpired(now)) {
       changed = true;
+      persistLater(sid);
       await rebuild(sid);
       notifySession(sid);
     }
@@ -346,6 +598,12 @@ async function syncContentScripts(): Promise<void> {
 
 async function init(): Promise<void> {
   await store.load();
+  // Unlocked after a worker restart (key in session memory); locked after a browser restart.
+  await vault.load().catch((e: unknown) => console.error('[sessionwoy] vault load failed', e));
+  // FR-17: empty session memory = browser start or extension reload. Open the restore window here,
+  // as the first queued task, so restored tabs cannot report their marker before it is open.
+  const freshStart = await markers.load();
+  await backend.load();
   for (const [tabId] of [...store.tabs]) {
     try {
       await chrome.tabs.get(tabId);
@@ -371,9 +629,14 @@ async function init(): Promise<void> {
   for (const tabId of store.tabs.keys()) await paintBadge(tabId);
   await syncContentScripts().catch((e: unknown) => console.error('[sessionwoy] content script sync failed', e));
   await chrome.alarms.create('sessionwoy-purge', { periodInMinutes: 1 });
+  if (freshStart) await openRestoreWindow();
+  // A restore window that ended while the worker was asleep is closed now.
+  else if (!markers.status(Date.now()).active) await markers.closeWindow();
 }
 
 void run(init);
+// Not awaited inside init(): an unreachable backend must never delay startup (reduced mode).
+void run(syncBackend);
 
 // ---------------------------------------------------------------- network observation
 
@@ -411,6 +674,7 @@ function captureSetCookies(
 async function afterJarChange(sid: string): Promise<void> {
   await rebuild(sid);
   await store.save();
+  persistLater(sid);
   notifySession(sid);
   broadcastUi();
 }
@@ -588,7 +852,28 @@ chrome.tabs.onCreated.addListener((tab) => {
   }, DUPLICATE_SETTLE_MS);
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => void run(() => forgetTab(tabId)));
+chrome.tabs.onRemoved.addListener((tabId, info) =>
+  void run(async () => {
+    // Closing the window (e.g. quitting Chrome) keeps the restore marker for the next start (FR-17);
+    // closing a single tab forgets it.
+    if (info.isWindowClosing) await markers.detach(tabId);
+    else await markers.forget(tabId);
+    await forgetTab(tabId);
+  }),
+);
+
+// FR-17: after a browser start (or an extension update/reload), restored tabs may rejoin their
+// sessions for a short window (see background/restore.ts). Opened from init(); no onStartup listener,
+// because a restored tab can report its marker before onStartup would be handled.
+async function openRestoreWindow(): Promise<void> {
+  const until = await markers.openWindow(Date.now());
+  await chrome.alarms.create('sessionwoy-restore-end', { when: until });
+  broadcastUi();
+}
+async function closeRestoreWindow(): Promise<void> {
+  await markers.closeWindow();
+  broadcastUi();
+}
 
 chrome.tabs.onReplaced.addListener((added, removed) =>
   void run(async () => {
@@ -624,7 +909,12 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 });
 
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === 'sessionwoy-purge') void run(purgeAll);
+  if (a.name === 'sessionwoy-purge') {
+    void run(purgeAll);
+    void run(flushVault); // backstop in case a debounced save was lost with a suspended worker
+  }
+  if (a.name === 'sessionwoy-restore-end') void run(closeRestoreWindow);
+  if (a.name === 'sessionwoy-purge') void run(syncBackend); // FR-20 retry + FR-21 health, every minute
 });
 
 const onPermissionsChanged = () =>
@@ -643,9 +933,25 @@ function isExtensionPage(sender: chrome.runtime.MessageSender): boolean {
   return sender.id === chrome.runtime.id && (sender.url ?? '').startsWith(`chrome-extension://${chrome.runtime.id}/`);
 }
 
+/**
+ * FR-17: a restored tab (new id after a browser restart) reports its marker. Only inside the restore
+ * window, only once per marker, only from the top frame, and only if the origin matches.
+ */
+async function restoreTab(tabId: number, marker: unknown, origin: string, topFrame: boolean): Promise<{ restored: boolean }> {
+  if (!topFrame || typeof marker !== 'string' || store.tabs.has(tabId)) return { restored: false };
+  const sid = await markers.claim(marker, origin, tabId, Date.now());
+  if (!sid || store.sessions.get(sid)?.status !== 'active') return { restored: false };
+  await assign(tabId, sid);
+  diag.restoredTabsFromMarker++;
+  await reloadIfWeb(tabId); // the first load went out without the session's cookies
+  return { restored: true };
+}
+
 async function handleContent(msg: ContentMessage, sender: chrome.runtime.MessageSender): Promise<unknown> {
   const tabId = sender.tab?.id;
   if (tabId === undefined || !sender.url || !/^https?:/.test(sender.url)) return { managed: false } satisfies Snapshot;
+  const topFrame = sender.frameId === 0;
+  if (msg.type === 'tab:restore') return restoreTab(tabId, msg.marker, new URL(sender.url).origin, topFrame);
   const sid = store.tabs.get(tabId);
   if (!sid) return { managed: false } satisfies Snapshot;
   // The frame URL comes from Chrome (sender.url), never from page-supplied data.
@@ -659,6 +965,8 @@ async function handleContent(msg: ContentMessage, sender: chrome.runtime.Message
         sessionId: sid,
         cookies: jar.scriptVisibleForHost(url, now),
         color: COLOR_HEX[store.sessions.get(sid)?.color ?? 'grey'],
+        // FR-17: the top frame keeps the marker; its origin is updated on every page load.
+        ...(topFrame ? { marker: await markers.track(tabId, sid, url.origin, now) } : {}),
       } satisfies Snapshot;
     case 'cookie:set':
     case 'cookie:import': {
@@ -673,6 +981,7 @@ async function handleContent(msg: ContentMessage, sender: chrome.runtime.Message
       if (changed) {
         await rebuild(sid);
         await store.save();
+        persistLater(sid);
         notifySession(sid, tabId);
         broadcastUi();
       }
@@ -696,6 +1005,9 @@ function uiState(tabId?: number): UiState {
     sessions,
     settings: { ...store.settings },
     tabSessionId: tabId !== undefined ? (store.tabs.get(tabId) ?? null) : null,
+    vault: vault.summary(),
+    restore: markers.status(now),
+    backend: backend.summary(),
     diag: snapshotDiag(),
   };
 }
@@ -753,6 +1065,49 @@ async function handleUi(msg: UiMessage): Promise<UiResult> {
       case 'ui:permissionsChanged':
         await syncContentScripts();
         return { ok: true, data: null };
+      case 'ui:vaultSetup':
+        await setupVault(msg.passphrase);
+        return { ok: true, data: vault.summary() };
+      case 'ui:unlock':
+        await unlockVault(msg.passphrase);
+        return { ok: true, data: vault.summary() };
+      case 'ui:lock':
+        await lockVault();
+        return { ok: true, data: vault.summary() };
+      case 'ui:changePassphrase':
+        if (typeof msg.current !== 'string' || typeof msg.next !== 'string') throw new Error('Passphrase is required');
+        await vault.changePassphrase(msg.current, msg.next);
+        await syncLater(['header', ...allSavedIds()]); // new key: everything is re-encrypted
+        broadcastUi();
+        return { ok: true, data: vault.summary() };
+      case 'ui:vaultReset':
+        await vault.reset(); // forget saved logins; current in-memory logins keep working
+        await syncLater(['wipe']);
+        broadcastUi();
+        return { ok: true, data: vault.summary() };
+      case 'ui:export':
+        return { ok: true, data: await exportBackup(msg.passphrase) };
+      case 'ui:import':
+        return { ok: true, data: await importBackup(msg.data, msg.passphrase, msg.apply === true) };
+      case 'ui:dismissRestore':
+        await markers.dismiss();
+        broadcastUi();
+        return { ok: true, data: null };
+      case 'ui:backend':
+        await configureBackend(msg.patch ?? {});
+        return { ok: true, data: backend.summary() };
+      case 'ui:backendSync':
+        if (msg.replace === true) {
+          // Explicit user choice: replace the backend's vault with this device's.
+          await backend.replaceRemote(vault.snapshot(), [...store.sessions.values()]);
+          backendVerified = true;
+        } else if (await verifyBackend()) {
+          await backend.pushAll(vault.snapshot(), [...store.sessions.values()]);
+        }
+        broadcastUi();
+        return { ok: true, data: backend.summary() };
+      case 'ui:backendRestore':
+        return { ok: true, data: await restoreFromBackend(msg.passphrase) };
       default:
         return { ok: false, error: 'Unknown message' };
     }
@@ -797,7 +1152,7 @@ if (__E2E__) {
   const ensureDebugSession = async (id: string) => {
     if (!store.sessions.has(id)) {
       store.createSession(id, undefined, id);
-      await store.saveDurable();
+      await saveMeta();
     }
   };
 
@@ -838,6 +1193,8 @@ if (__E2E__) {
     diag: () => run(snapshotDiag),
     rules: () => chrome.declarativeNetRequest.getSessionRules(),
     setInheritOnOpen: (v: boolean) => run(() => updateSettings({ inheritOnOpen: v })),
+    /** Ends the FR-17 restore window now instead of after 90 s. */
+    endRestoreWindow: () => run(closeRestoreWindow),
   };
   (globalThis as unknown as { sessionwoy: typeof debugApi }).sessionwoy = debugApi;
 }

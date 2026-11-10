@@ -7,8 +7,11 @@
   import type { UiState } from '../../shared/messages.js';
   import { nextColor, type GroupingMode, type SessionColor } from '../../shared/sessions.js';
   import { activeTab, api, isWebUrl, onChanged, originPattern } from '../api.js';
+  import BackendStatus from '../components/BackendStatus.svelte';
   import ModeToggle from '../components/ModeToggle.svelte';
   import NewSessionForm from '../components/NewSessionForm.svelte';
+  import PassphraseForm from '../components/PassphraseForm.svelte';
+  import RestoreNotice from '../components/RestoreNotice.svelte';
   import SessionChip from '../components/SessionChip.svelte';
   import Theme from '../components/Theme.svelte';
 
@@ -116,6 +119,26 @@
 
   {#if error}<div class="error">{error}</div>{/if}
 
+  {#if st}<RestoreNotice restore={st.restore} />{/if}
+
+  {#if st?.vault.state === 'locked'}
+    <section class="card locked" aria-label="Unlock saved logins">
+      <strong>Saved logins are locked</strong>
+      <span class="muted">
+        Session tabs stay logged out until you enter your passphrase ({st.vault.savedSessions} saved session{st.vault
+          .savedSessions === 1
+          ? ''
+          : 's'}).
+      </span>
+      <PassphraseForm mode="unlock" submitLabel="Unlock" onsubmit={async (p) => void (await api.unlock(p))} />
+    </section>
+  {:else if st?.vault.state === 'none' && st.sessions.some((s) => s.cookieCount > 0)}
+    <div class="notice">
+      Logins are lost when Chrome closes.
+      <button type="button" class="link" onclick={openManager}>Set a passphrase</button> to keep them, encrypted.
+    </div>
+  {/if}
+
   {#if st}
     <section class="card">
       <div class="label muted">This tab</div>
@@ -196,6 +219,7 @@
       <ModeToggle compact value={st.settings.grouping} onchange={setMode} />
     </section>
 
+    <BackendStatus backend={st.backend} compact />
     <footer class="muted">Only cookies are separated per session. localStorage and IndexedDB stay shared.</footer>
   {:else if !error}
     <p class="muted">Loading…</p>
@@ -226,6 +250,9 @@
     padding: 10px;
     display: grid;
     gap: 8px;
+  }
+  .card.locked {
+    border: 1px solid var(--accent);
   }
   .current {
     display: flex;

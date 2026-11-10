@@ -15,7 +15,12 @@ export type Snapshot =
       cookies: StoredCookie[];
       /** Session color (hex) for the favicon dot marker; not secret. */
       color?: string;
+      /** Top frame only: this tab's restore marker, kept in sessionStorage (FR-17). */
+      marker?: string;
     };
+
+/** sessionStorage key holding the tab's restore marker (top frame). */
+export const TAB_MARKER_KEY = '__sessionwoy_tab';
 
 /** MAIN world -> relay. */
 export type MainToRelay =
@@ -26,7 +31,9 @@ export type MainToRelay =
 export type ContentMessage =
   | { type: 'snapshot:get' }
   | { type: 'cookie:set'; value: string }
-  | { type: 'cookie:import'; values: string[] };
+  | { type: 'cookie:import'; values: string[] }
+  /** A restored tab reports the marker it had before the browser restart (FR-17). */
+  | { type: 'tab:restore'; marker: string };
 
 /**
  * Extension pages (popup, side panel) -> service worker. Accepted only from extension pages.
@@ -44,11 +51,66 @@ export type UiMessage =
   | { type: 'ui:openTab'; sessionId: string; url: string }
   | { type: 'ui:cookies'; id: string }
   | { type: 'ui:settings'; patch: Partial<Settings> }
-  | { type: 'ui:permissionsChanged' };
+  | { type: 'ui:permissionsChanged' }
+  // Encrypted vault (Phase 4a, ADR 0004). Passphrases are never stored, logged or echoed back.
+  | { type: 'ui:vaultSetup'; passphrase: string }
+  | { type: 'ui:unlock'; passphrase: string }
+  | { type: 'ui:lock' }
+  | { type: 'ui:changePassphrase'; current: string; next: string }
+  | { type: 'ui:vaultReset' }
+  // Encrypted backup file (Phase 4b). `apply: false` only previews what an import would do.
+  | { type: 'ui:export'; passphrase: string }
+  | { type: 'ui:import'; data: string; passphrase: string; apply: boolean }
+  // Tab restore after a browser restart (Phase 4c).
+  | { type: 'ui:dismissRestore' }
+  // Local backend (Phase 4d). The secret goes in, but is never sent back to the UI.
+  | { type: 'ui:backend'; patch: { enabled?: boolean; url?: string; secret?: string } }
+  | { type: 'ui:backendSync'; replace?: boolean }
+  | { type: 'ui:backendRestore'; passphrase: string };
+
+/** FR-21 connection status. `unknown` = enabled but not checked yet. */
+export interface BackendSummary {
+  enabled: boolean;
+  url: string;
+  hasSecret: boolean;
+  state: 'disabled' | 'unknown' | 'connected' | 'offline';
+  error: string | null;
+  lastSyncAt: number | null;
+  checkedAt: number | null;
+  /** Changes waiting to be sent (reduced mode while offline). */
+  pending: number;
+  /** The backend holds another device's (or passphrase's) logins: restore or explicitly replace. */
+  remoteDiffers: boolean;
+}
+
+export interface RestoreStatus {
+  /** True while restored tabs can still rejoin their sessions. */
+  active: boolean;
+  /** Tabs from the last browser run that could not be restored (until dismissed). */
+  unrestored: number;
+}
+
+export interface ExportResult {
+  fileName: string;
+  /** The encrypted backup file content (JSON). */
+  data: string;
+}
+
+export interface ImportPreview {
+  sessions: { id: string; name: string; cookies: number; exists: boolean }[];
+  imported?: number;
+}
 
 export interface UiSession extends SessionMeta {
   tabCount: number;
   cookieCount: number;
+}
+
+/** `none`: no passphrase yet (logins kept in memory only); `locked`: saved logins need the passphrase. */
+export interface VaultSummary {
+  state: 'none' | 'locked' | 'unlocked';
+  savedSessions: number;
+  lastSavedAt: number | null;
 }
 
 export interface UiState {
@@ -56,6 +118,9 @@ export interface UiState {
   settings: Settings;
   /** Session of the tab passed in `ui:state`, if any. */
   tabSessionId: string | null;
+  vault: VaultSummary;
+  restore: RestoreStatus;
+  backend: BackendSummary;
   diag: unknown;
 }
 

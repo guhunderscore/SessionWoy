@@ -11,6 +11,7 @@ services:
     restart: unless-stopped
 
   # Phase 4 (optional). Not started unless `--profile backend` is given.
+  # Stores ciphertext only (the extension encrypts); loopback only.
   backend:
     build: ./backend
     container_name: backend
@@ -22,7 +23,11 @@ services:
     environment:
       PORT: 3004
       DATABASE_PATH: /app/data/sessions.sqlite
-      API_SECRET: ${API_SECRET}
+      API_SECRET: ${API_SECRET:?set API_SECRET in .env (openssl rand -hex 32)}
+      # Host headers accepted: the published loopback port, plus the container port for the healthcheck.
+      ALLOWED_HOSTS: 127.0.0.1:${API_PORT:-3004},localhost:${API_PORT:-3004},127.0.0.1:3004
+      # Optional: pin the extension, e.g. chrome-extension://<id> (default: any chrome-extension:// origin).
+      ALLOWED_ORIGINS: ${BACKEND_ALLOWED_ORIGINS:-}
     restart: unless-stopped
 
 volumes:

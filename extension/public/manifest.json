@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SessionWoy",
   "short_name": "SessionWoy",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Named cookie sessions per tab: stay logged in to the same site with several accounts in one window.",
   "minimum_chrome_version": "120",
   "icons": {

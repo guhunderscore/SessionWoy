@@ -206,6 +206,20 @@ export function serialize(cookies: StoredCookie[]): string {
     .join('; ');
 }
 
+/**
+ * Merges two cookie lists by RFC 6265 identity (name, domain, path). `primary` wins on conflicts;
+ * expired cookies are dropped. Used on unlock: cookies captured in memory while the vault was locked
+ * (primary) are newer than the saved ones (secondary).
+ */
+export function mergeCookies(primary: StoredCookie[], secondary: StoredCookie[], now: number): StoredCookie[] {
+  const out = new Map<string, StoredCookie>();
+  for (const c of [...secondary, ...primary]) {
+    if (isExpired(c, now)) continue;
+    out.set(`${c.name}\u0000${c.domain}\u0000${c.path}`, c);
+  }
+  return [...out.values()];
+}
+
 export class CookieJar {
   private cookies: StoredCookie[];
 

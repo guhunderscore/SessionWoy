@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CookieJar, defaultPath, domainMatch, parseSetCookie, pathMatch } from '../src/shared/cookieJar.js';
+import { CookieJar, defaultPath, domainMatch, mergeCookies, parseSetCookie, pathMatch } from '../src/shared/cookieJar.js';
 
 const NOW = 1_700_000_000_000;
 const u = (s: string) => new URL(s);
@@ -58,6 +58,23 @@ describe('parseSetCookie', () => {
   });
   it('rejects HttpOnly from script', () => {
     expect(parseSetCookie('a=1; HttpOnly', u('http://localhost/'), NOW, { fromScript: true }).ok).toBe(false);
+  });
+});
+
+describe('mergeCookies', () => {
+  it('keeps both sides, primary wins on the same name/domain/path, expired cookies are dropped', () => {
+    const url = u('http://localhost/');
+    const saved = new CookieJar();
+    saved.setFromHeader('sid=old; Path=/', url, NOW);
+    saved.setFromHeader('pref=dark; Path=/', url, NOW);
+    saved.setFromHeader('gone=1; Max-Age=1', url, NOW);
+    const memory = new CookieJar();
+    memory.setFromHeader('sid=new; Path=/', url, NOW + 10);
+    memory.setFromHeader('extra=1; Path=/x', url, NOW + 10);
+    const merged = new CookieJar(mergeCookies(memory.all(), saved.all(), NOW + 5000));
+    // RFC 6265 order: longer path first, then older creation time (pref was created before sid=new).
+    expect(merged.cookieHeaderFor(u('http://localhost/x/y'), NOW + 5000)).toBe('extra=1; pref=dark; sid=new');
+    expect(merged.size).toBe(3);
   });
 });
 

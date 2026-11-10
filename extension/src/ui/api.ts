@@ -1,5 +1,15 @@
 /** Typed client for the service worker's `ui:*` messages, shared by the popup and the side panel. */
-import { UI_CHANGED, type UiCookies, type UiMessage, type UiResult, type UiState } from '../shared/messages.js';
+import {
+  UI_CHANGED,
+  type BackendSummary,
+  type ExportResult,
+  type ImportPreview,
+  type UiCookies,
+  type UiMessage,
+  type UiResult,
+  type UiState,
+  type VaultSummary,
+} from '../shared/messages.js';
 import type { SessionColor, SessionMeta, Settings } from '../shared/sessions.js';
 
 async function call<T>(msg: UiMessage): Promise<T> {
@@ -23,7 +33,32 @@ export const api = {
   cookies: (id: string) => call<UiCookies>({ type: 'ui:cookies', id }),
   settings: (patch: Partial<Settings>) => call<Settings>({ type: 'ui:settings', patch }),
   permissionsChanged: () => call<null>({ type: 'ui:permissionsChanged' }),
+  // Encrypted vault (ADR 0004). Passphrases only travel to the service worker, never to storage.
+  vaultSetup: (passphrase: string) => call<VaultSummary>({ type: 'ui:vaultSetup', passphrase }),
+  unlock: (passphrase: string) => call<VaultSummary>({ type: 'ui:unlock', passphrase }),
+  lock: () => call<VaultSummary>({ type: 'ui:lock' }),
+  changePassphrase: (current: string, next: string) => call<VaultSummary>({ type: 'ui:changePassphrase', current, next }),
+  vaultReset: () => call<VaultSummary>({ type: 'ui:vaultReset' }),
+  exportBackup: (passphrase: string) => call<ExportResult>({ type: 'ui:export', passphrase }),
+  importBackup: (data: string, passphrase: string, apply: boolean) =>
+    call<ImportPreview>({ type: 'ui:import', data, passphrase, apply }),
+  dismissRestore: () => call<null>({ type: 'ui:dismissRestore' }),
+  backend: (patch: { enabled?: boolean; url?: string; secret?: string }) => call<BackendSummary>({ type: 'ui:backend', patch }),
+  backendSync: (replace = false) => call<BackendSummary>({ type: 'ui:backendSync', replace }),
+  backendRestore: (passphrase: string) => call<{ sessions: number }>({ type: 'ui:backendRestore', passphrase }),
 };
+
+/** Saves text as a file through a temporary download link (no "downloads" permission needed). */
+export function downloadText(fileName: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 /** Calls `fn` whenever the service worker reports a state change. Returns an unsubscribe function. */
 export function onChanged(fn: () => void): () => void {
