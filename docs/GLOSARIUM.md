@@ -11,6 +11,7 @@ Entries are grouped by topic, not sorted alphabetically.
 | **ADR** | Architecture Decision Record | A short document recording one technical decision, why it was made, and its consequences. Stored in `docs/adr/` |
 | **ADR 0001** | — | `docs/adr/0001-cookie-swapping.md`. The decision to use *cookie swapping* and the pass/fail criteria (G1–G10), fixed **before** any code was written |
 | **ADR 0002** | — | `docs/adr/0002-poc-result.md`. POC results: test table, findings F1–F6, known limitations, compatibility matrix, and verdict |
+| **ADR 0003** | — | `docs/adr/0003-session-manager-ui.md`. Phase 3 UI decisions: popup + side panel, Svelte instead of React, tab-group colors, persistence split, debug-API gating |
 | **POC** | Proof of Concept | A minimal build to prove that a risky idea actually works before building the full product. Here: can cookies be separated per tab? |
 | **MVP** | Minimum Viable Product | The smallest version of the product that is actually usable (defined in PRD §15) |
 | **Phase 0–6** | — | Delivery stages in PRD §11: 0 research, 1 test server, 2 POC, 3 UI, 4 persistence & backend, 5 compatibility, 6 optional enhancements |
@@ -25,8 +26,9 @@ Entries are grouped by topic, not sorted alphabetically.
 | Code | Meaning | Location |
 | --- | --- | --- |
 | **G-n** (G1–G10) | Go/no-go criteria | ADR 0001 |
-| **S-n** (S1–S15) | End-to-end test scenarios; one-to-one with the results table | `e2e/tests/poc.spec.ts`, ADR 0002 |
-| **F-n** (F1–F6) | Technical findings during the POC (e.g. F3 = redirect race, F6 = session inheritance bug) | ADR 0002 |
+| **S-n** (S1–S21) | End-to-end test scenarios; one-to-one with the results tables | S1–S15: `e2e/tests/poc.spec.ts`, ADR 0002; S16–S21: `e2e/tests/ui.spec.ts`, ADR 0003 |
+| **D-n** (D1–D8) | Decisions in an ADR | ADR 0003 |
+| **F-n** (F1–F8) | Technical findings (e.g. F3 = redirect race, F6 = session inheritance bug, F7 = orphaned content scripts after an extension reload, F8 = session applied on a site without host access) | F1–F6: ADR 0002; F7–F8: ADR 0003 |
 | **FR-n** | Functional Requirement | PRD §5 |
 | **NFR** | Non-Functional Requirement: quality targets (speed, security, reliability) | PRD §6 |
 | **G1, G2, …** in the PRD | Product goals | PRD §2.1 (not the same as G-n in ADR 0001) |
@@ -41,13 +43,19 @@ Entries are grouped by topic, not sorted alphabetically.
 | **Shared jar** | Chrome's built-in cookie jar, shared by all normal tabs. Managed tabs never read from or write to it |
 | **Session jar** | The cookie jar belonging to one session, stored by the extension |
 | **Cookie swapping** | SessionWoy's core technique: replacing the `Cookie` header of every request with the cookies of that tab's session |
-| **Presets (A/B/C)** | Fixed sessions in the POC: A = Customer, B = Provider, C = Admin. Replaced by user-created sessions in Phase 3 |
+| **Presets (A/B/C)** | Fixed sessions in the POC: A = Customer, B = Provider, C = Admin. Removed in Phase 3; sessions are now user-created |
+| **Archive / Restore** | Archiving hides a session and turns its tabs into normal tabs, but keeps its cookies (in memory). Restoring makes it usable again |
+| **Reset** | Clears a session's cookies (logs it out) while its tabs stay in the session |
+| **Favicon dot** | A dot in the session color drawn on the bottom-right of a session tab's favicon (or a plain colored circle if the site's favicon cannot be read). Always on; removed when the tab leaves its session |
+| **Per tab / Per group** | The session marker mode ("Show sessions"). The session is always chosen per tab. *Per tab* (default): only the toolbar badge shows it. *Per group*: each session's tabs are also collected in a colored Chrome tab group. Groups are only a marker; dragging a tab to another group does not change its session |
+| **Session color** | One of the 9 Chrome tab-group colors (grey, blue, red, yellow, green, pink, purple, cyan, orange), used for the badge, the UI and the tab group |
+| **Release build / e2e build** | `extension/dist` (what users load; no debug API) vs `extension/dist-e2e` (used by Playwright; includes the debug API) |
 | **Inheritance** | A new tab opened from a link in a managed tab automatically joins the source tab's session (on by default) |
 | **Stale request** | A request sent with old cookies because the cookie rules had not been updated yet (finding F3) |
 | **Heal** | The mechanism that re-issues a GET navigation sent with old cookies, so the page loads with the current cookies |
 | **Redirect race** | When a server sends `Set-Cookie` on a `302` redirect and Chrome follows the redirect before the cookie rules are updated |
 | **Snapshot cache** | A copy of the session's script-visible cookies in `sessionStorage`, so `document.cookie` has an immediate answer when a page reloads |
-| **Debug API** | Test-only functions in the service worker (`globalThis.sessionwoy`). Must be removed or gated before release |
+| **Debug API** | Test-only functions in the service worker (`globalThis.sessionwoy`). Present only in the e2e build (`__E2E__`), stripped from the release build |
 
 ## 4. Web and browser
 
@@ -85,10 +93,13 @@ Entries are grouped by topic, not sorted alphabetically.
 | **Service Worker (SW)** | — | A background script. Two kinds: (1) the **extension's**, which is SessionWoy's brain; (2) a **website's**, whose requests are not tied to a tab and so are not yet separated per session (limitation 1) |
 | **Content script** | — | An extension script injected into a web page |
 | **MAIN world / ISOLATED world** | — | MAIN = the page's own JavaScript context; ISOLATED = a separate context owned by the extension. SessionWoy uses both for `document.cookie` |
-| **Popup** | — | The small window that opens when you click the extension icon |
+| **Popup** | — | The small window that opens when you click the extension icon. In SessionWoy: quick actions for the current tab |
+| **Side panel** | — | A panel docked at the side of the Chrome window that stays open while you switch tabs (`chrome.sidePanel`). In SessionWoy: session management |
+| **Tab group** | — | Chrome's named, colored grouping of tabs in the tab strip (`chrome.tabGroups`). SessionWoy puts each session's tabs in one group |
 | **Badge** | — | Small colored text on the extension icon (e.g. the session name) |
 | **Host permission** | — | The extension's permission to access a specific site. Granted per site with *Grant access to this site* |
-| **`chrome.storage.session`** | — | In-memory extension storage; cleared when the extension reloads or the browser restarts (limitation 8) |
+| **`chrome.storage.session`** | — | In-memory extension storage; cleared when the extension reloads or the browser restarts (limitation 8). Holds tab mapping and cookies |
+| **`chrome.storage.local`** | — | Durable extension storage on disk. Holds session names, colors and settings only, never cookies (until Phase 4 encryption) |
 | **Unpacked extension** | — | An extension loaded directly from a folder (`extension/dist`) in *Developer mode*, not from the Chrome Web Store |
 
 ## 6. Tooling and infrastructure
@@ -100,6 +111,9 @@ Entries are grouped by topic, not sorted alphabetically.
 | **Playwright** | — | Browser automation tool used for the E2E tests |
 | **Vitest** | — | Unit test framework for TypeScript |
 | **esbuild** | — | Build tool that bundles the extension's TypeScript into `dist/` |
+| **Svelte 5** | — | UI framework used for the popup and side panel. Components (`.svelte`) are compiled at build time by `esbuild-svelte`; only a small runtime ships. Uses *runes* (`$state`, `$derived`, `$props`, `$effect`) |
+| **svelte-check** | — | Type checker for `.svelte` and `.ts` files (`npm run typecheck`) |
+| **`__E2E__`** | — | Build-time flag: `true` only in the e2e build, where it enables the debug API |
 | **Fastify** | — | Node.js web framework for the test server and the backend |
 | **Docker / Docker Compose** | — | Runs services in containers. Service `app` = test server (port 3003), `backend` = Phase 4 API (port 3004) |
 | **CDP** | Chrome DevTools Protocol | Chrome's control channel used by automated tests, e.g. to stop the service worker (S10) |

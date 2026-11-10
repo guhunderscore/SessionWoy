@@ -5,13 +5,17 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
+    "build:e2e": "node build.mjs --e2e",
     "watch": "node build.mjs --watch",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json"
   },
   "devDependencies": {
     "@types/chrome": "^0.3.7",
     "esbuild": "^0.28.2",
+    "esbuild-svelte": "^0.9.5",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
     "vitest": "^5.1.0"
   }
 }

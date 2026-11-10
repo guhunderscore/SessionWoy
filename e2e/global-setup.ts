@@ -4,7 +4,7 @@ import { BASE_URL } from './playwright.config.js';
 
 export default async function globalSetup(): Promise<void> {
   if (!existsSync(`${EXTENSION_DIR}/manifest.json`)) {
-    throw new Error(`Extension not built at ${EXTENSION_DIR}. Run: npm run build -w extension`);
+    throw new Error(`Extension not built at ${EXTENSION_DIR}. Run: npm run build:e2e -w extension`);
   }
   try {
     const res = await fetch(`${BASE_URL}/health`);

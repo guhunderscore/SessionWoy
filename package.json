@@ -15,7 +15,7 @@
   "scripts": {
     "build": "npm run build -w extension && npm run build -w test-server",
     "test": "npm test -w test-server && npm test -w extension",
-    "test:e2e": "npm run build -w extension && npm test -w e2e",
+    "test:e2e": "npm run build:e2e -w extension && npm test -w e2e",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write ."

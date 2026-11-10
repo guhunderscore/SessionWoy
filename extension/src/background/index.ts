@@ -1,18 +1,38 @@
 /**
- * SessionWoy POC service worker.
+ * SessionWoy service worker.
  *
  * All listeners are registered synchronously at top level (MV3 requirement so
  * that events wake the worker). Work is pushed through `run()`, a FIFO queue
  * whose first task is `init()` (state rehydration + full rule rebuild).
  */
 import { buildSessionRules, type RuleSpec } from '../shared/rules.js';
-import type { ContentMessage, PopupMessage, Snapshot } from '../shared/messages.js';
+import { UI_CHANGED, type ContentMessage, type Snapshot, type UiMessage, type UiResult, type UiState } from '../shared/messages.js';
+import {
+  COLOR_HEX,
+  badgeText,
+  isGroupingMode,
+  isSessionColor,
+  summarizeCookies,
+  validateName,
+  type SessionMeta,
+} from '../shared/sessions.js';
 import { applySessionRules, replaceAllRules, ruleStats } from './dnr.js';
+import {
+  addToSessionGroup,
+  forgetSessionGroups,
+  groupAllTabs,
+  onGroupRemoved,
+  refreshSessionGroups,
+  removeFromSessionGroup,
+  ungroupAllTabs,
+} from './groups.js';
 import { serial } from './serial.js';
-import { PRESETS, Store } from './state.js';
+import { Store } from './state.js';
+
+/** Replaced at build time: true only in the e2e build (`node build.mjs --e2e`). */
+declare const __E2E__: boolean;
 
 const store = new Store();
-const settings = { inheritOnOpen: true };
 
 const diag = {
   workerStartedAt: Date.now(),
@@ -57,33 +77,95 @@ function notifySession(sessionId: string, exceptTab?: number): void {
   }
 }
 
+/** Tells open extension pages (popup, side panel) to re-fetch their state. */
+function broadcastUi(): void {
+  chrome.runtime.sendMessage({ type: UI_CHANGED }).catch(() => undefined);
+}
+
+/**
+ * Host access for a URL. Without it, DNR rules and Set-Cookie capture do not apply to that origin,
+ * so a managed tab there silently uses Chrome's shared cookie jar (F8). Non-web URLs need no access.
+ */
+async function hasHostAccess(url: string | undefined): Promise<boolean> {
+  if (!url || !/^https?:\/\//.test(url)) return true;
+  try {
+    return await chrome.permissions.contains({ origins: [`${new URL(url).origin}/*`] });
+  } catch {
+    return false;
+  }
+}
+
+/** Refuses to put a tab into a session on an origin SessionWoy cannot isolate (F8). */
+async function requireHostAccess(url: string | undefined): Promise<void> {
+  if (!(await hasHostAccess(url))) {
+    throw new Error(
+      `SessionWoy has no access to ${new URL(url!).origin}, so a session cannot keep its login separate there. Grant access to this site first.`,
+    );
+  }
+}
+
+const NO_ACCESS_BADGE = '#d93025';
+
 async function paintBadge(tabId: number): Promise<void> {
   const sid = store.tabs.get(tabId);
   const meta = sid ? store.sessions.get(sid) : undefined;
   try {
-    await chrome.action.setBadgeText({ tabId, text: meta ? meta.name.slice(0, 4) : '' });
-    if (meta) await chrome.action.setBadgeBackgroundColor({ tabId, color: meta.color });
-    await chrome.action.setTitle({ tabId, title: meta ? `SessionWoy: ${meta.name}` : 'SessionWoy: unmanaged' });
+    if (!meta) {
+      await chrome.action.setBadgeText({ tabId, text: '' });
+      await chrome.action.setTitle({ tabId, title: 'SessionWoy: no session' });
+      return;
+    }
+    const tab = await chrome.tabs.get(tabId);
+    if (!(await hasHostAccess(tab.pendingUrl ?? tab.url))) {
+      // F8: the session cannot apply here; warn instead of pretending.
+      await chrome.action.setBadgeText({ tabId, text: '!' });
+      await chrome.action.setBadgeBackgroundColor({ tabId, color: NO_ACCESS_BADGE });
+      await chrome.action.setTitle({
+        tabId,
+        title: `SessionWoy: ${meta.name}, but no access to this site: normal Chrome cookies are used here`,
+      });
+      return;
+    }
+    await chrome.action.setBadgeText({ tabId, text: badgeText(meta.name) });
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: COLOR_HEX[meta.color] });
+    await chrome.action.setTitle({ tabId, title: `SessionWoy: ${meta.name}` });
   } catch {
     /* tab may be gone */
   }
 }
 
+async function repaintAllBadges(): Promise<void> {
+  for (const tabId of store.tabs.keys()) await paintBadge(tabId);
+}
+
+async function reloadIfWeb(tabId: number): Promise<void> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (/^https?:/.test(tab.url ?? tab.pendingUrl ?? '')) await chrome.tabs.reload(tabId);
+  } catch {
+    /* tab gone */
+  }
+}
+
 async function assign(tabId: number, sessionId: string | null): Promise<void> {
+  if (sessionId) {
+    const meta = store.sessions.get(sessionId);
+    if (!meta) throw new Error('Unknown session');
+    if (meta.status !== 'active') throw new Error('Session is archived');
+  }
   const prev = store.tabs.get(tabId) ?? null;
   if (prev === sessionId) return;
-  if (sessionId) {
-    store.ensureSession(sessionId);
-    store.tabs.set(tabId, sessionId);
-  } else {
-    store.tabs.delete(tabId);
-  }
+  if (sessionId) store.tabs.set(tabId, sessionId);
+  else store.tabs.delete(tabId);
   // New session's rules first, so the tab is never without a cookie-stripping rule.
   if (sessionId) await rebuild(sessionId);
   if (prev) await rebuild(prev);
+  if (sessionId) await addToSessionGroup(store, tabId, sessionId);
+  else if (prev) await removeFromSessionGroup(store, tabId, prev);
   await store.save();
   await paintBadge(tabId);
   chrome.tabs.sendMessage(tabId, { type: 'session:changed' }).catch(() => undefined);
+  broadcastUi();
 }
 
 async function forgetTab(tabId: number): Promise<void> {
@@ -92,13 +174,116 @@ async function forgetTab(tabId: number): Promise<void> {
   store.tabs.delete(tabId); // FR-9: mapping only; session data is kept
   await rebuild(sid);
   await store.save();
+  broadcastUi();
 }
 
+/** Unassigns every tab of a session (tabs become normal tabs and are reloaded). */
+async function releaseTabs(sessionId: string): Promise<number[]> {
+  const tabs = store.tabsOf(sessionId);
+  for (const tabId of tabs) {
+    store.tabs.delete(tabId);
+    await removeFromSessionGroup(store, tabId, sessionId);
+  }
+  await rebuild(sessionId);
+  for (const tabId of tabs) {
+    await paintBadge(tabId);
+    chrome.tabs.sendMessage(tabId, { type: 'session:changed' }).catch(() => undefined);
+  }
+  return tabs;
+}
+
+/** FR-3: clears the session's cookies, keeps its tabs assigned and reloads them. */
 async function resetSession(sessionId: string): Promise<void> {
   store.jar(sessionId).clear();
   await rebuild(sessionId);
   await store.save();
   notifySession(sessionId);
+  for (const tabId of store.tabsOf(sessionId)) await reloadIfWeb(tabId);
+  broadcastUi();
+}
+
+function requireSession(id: string): SessionMeta {
+  const meta = store.sessions.get(id);
+  if (!meta) throw new Error('Unknown session');
+  return meta;
+}
+
+async function createSession(name: unknown, color: unknown): Promise<SessionMeta> {
+  const v = validateName(name);
+  if (!v.ok) throw new Error(v.error);
+  const meta = store.createSession(v.name, isSessionColor(color) ? color : undefined);
+  await store.saveDurable();
+  broadcastUi();
+  return meta;
+}
+
+async function updateSession(id: string, patch: { name?: unknown; color?: unknown }): Promise<SessionMeta> {
+  const meta = requireSession(id);
+  if (patch.name !== undefined) {
+    const v = validateName(patch.name);
+    if (!v.ok) throw new Error(v.error);
+    meta.name = v.name;
+  }
+  if (patch.color !== undefined) {
+    if (!isSessionColor(patch.color)) throw new Error('Unknown color');
+    meta.color = patch.color;
+  }
+  meta.updatedAt = Date.now();
+  await store.saveDurable();
+  await refreshSessionGroups(store, id);
+  for (const tabId of store.tabsOf(id)) await paintBadge(tabId);
+  await store.save();
+  notifySession(id); // recolor: tabs refresh their favicon dot
+  broadcastUi();
+  return meta;
+}
+
+/** Archive: tabs are released, cookies are kept (in memory), the session is hidden from the popup. */
+async function archiveSession(id: string): Promise<void> {
+  const meta = requireSession(id);
+  const tabs = await releaseTabs(id);
+  forgetSessionGroups(store, id);
+  meta.status = 'archived';
+  meta.updatedAt = Date.now();
+  await store.save();
+  await store.saveDurable();
+  for (const tabId of tabs) await reloadIfWeb(tabId);
+  broadcastUi();
+}
+
+async function restoreSession(id: string): Promise<void> {
+  const meta = requireSession(id);
+  meta.status = 'active';
+  meta.updatedAt = Date.now();
+  await store.saveDurable();
+  broadcastUi();
+}
+
+/** FR-2: deleting a session deletes all of its data (cookies, rules, groups, metadata). */
+async function deleteSession(id: string): Promise<void> {
+  requireSession(id);
+  const tabs = await releaseTabs(id);
+  forgetSessionGroups(store, id);
+  store.dropSession(id);
+  await applySessionRules(id, []);
+  await store.save();
+  await store.saveDurable();
+  for (const tabId of tabs) await reloadIfWeb(tabId);
+  broadcastUi();
+}
+
+async function updateSettings(patch: { inheritOnOpen?: unknown; grouping?: unknown }): Promise<void> {
+  if (patch.grouping !== undefined && !isGroupingMode(patch.grouping)) throw new Error('Unknown mode');
+  if (typeof patch.inheritOnOpen === 'boolean') store.settings.inheritOnOpen = patch.inheritOnOpen;
+  if (isGroupingMode(patch.grouping) && patch.grouping !== store.settings.grouping) {
+    store.settings.grouping = patch.grouping;
+    // Only the marker changes: every tab keeps its session.
+    if (patch.grouping === 'group') await groupAllTabs(store);
+    else await ungroupAllTabs(store);
+    await store.save();
+  }
+  await store.saveDurable();
+  broadcastUi();
 }
 
 // ---------------------------------------------------------------- expiry
@@ -129,7 +314,10 @@ async function purgeAll(): Promise<void> {
       notifySession(sid);
     }
   }
-  if (changed) await store.save();
+  if (changed) {
+    await store.save();
+    broadcastUi();
+  }
   scheduleExpiry();
 }
 
@@ -177,6 +365,8 @@ async function init(): Promise<void> {
   await replaceAllRules(specs);
   loaded = true;
   scheduleExpiry();
+  // Leftover groups from "per group" mode (or from before the per-tab default) are removed.
+  if (store.settings.grouping === 'tab' && store.groups.size) await ungroupAllTabs(store);
   await store.save();
   for (const tabId of store.tabs.keys()) await paintBadge(tabId);
   await syncContentScripts().catch((e: unknown) => console.error('[sessionwoy] content script sync failed', e));
@@ -222,6 +412,7 @@ async function afterJarChange(sid: string): Promise<void> {
   await rebuild(sid);
   await store.save();
   notifySession(sid);
+  broadcastUi();
 }
 
 chrome.webRequest.onHeadersReceived.addListener(
@@ -347,8 +538,9 @@ function logInherit(entry: { via: InheritVia; source: number; tab: number; sessi
 }
 
 function inheritFrom(sourceTabId: number | undefined, newTabId: number | undefined, via: InheritVia): void {
-  if (sourceTabId === undefined || newTabId === undefined || !settings.inheritOnOpen) return;
+  if (sourceTabId === undefined || newTabId === undefined) return;
   void run(async () => {
+    if (!store.settings.inheritOnOpen) return;
     const sid = store.tabs.get(sourceTabId) ?? null;
     const current = store.tabs.get(newTabId) ?? null;
     const log = (applied: boolean, reason?: string) =>
@@ -410,21 +602,45 @@ chrome.tabs.onReplaced.addListener((added, removed) =>
   }),
 );
 
+// A managed tab dragged to another window joins its session's group there.
+chrome.tabs.onAttached.addListener((tabId) =>
+  void run(async () => {
+    const sid = store.tabs.get(tabId);
+    if (!sid) return;
+    await addToSessionGroup(store, tabId, sid);
+    await store.save();
+  }),
+);
+
+chrome.tabGroups.onRemoved.addListener((group) =>
+  void run(async () => {
+    if (onGroupRemoved(store, group.id)) await store.save();
+  }),
+);
+
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status === 'loading') void run(() => (store.tabs.has(tabId) ? paintBadge(tabId) : undefined));
+  // Repaint on navigation: the "!" no-access warning depends on the tab's current site (F8).
+  if (info.status === 'loading' || info.url) void run(() => (store.tabs.has(tabId) ? paintBadge(tabId) : undefined));
 });
 
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === 'sessionwoy-purge') void run(purgeAll);
 });
 
-chrome.permissions.onAdded.addListener(() => void run(syncContentScripts));
-chrome.permissions.onRemoved.addListener(() => void run(syncContentScripts));
+const onPermissionsChanged = () =>
+  void run(async () => {
+    await syncContentScripts();
+    await repaintAllBadges(); // "!" appears or disappears (F8)
+    broadcastUi();
+  });
+chrome.permissions.onAdded.addListener(onPermissionsChanged);
+chrome.permissions.onRemoved.addListener(onPermissionsChanged);
 
 // ---------------------------------------------------------------- messages
 
+/** Popup and side panel (also when opened as a tab) — never a content script, whose URL is http(s). */
 function isExtensionPage(sender: chrome.runtime.MessageSender): boolean {
-  return sender.id === chrome.runtime.id && !sender.tab && (sender.url ?? '').startsWith(`chrome-extension://${chrome.runtime.id}/`);
+  return sender.id === chrome.runtime.id && (sender.url ?? '').startsWith(`chrome-extension://${chrome.runtime.id}/`);
 }
 
 async function handleContent(msg: ContentMessage, sender: chrome.runtime.MessageSender): Promise<unknown> {
@@ -438,7 +654,12 @@ async function handleContent(msg: ContentMessage, sender: chrome.runtime.Message
   const now = Date.now();
   switch (msg.type) {
     case 'snapshot:get':
-      return { managed: true, sessionId: sid, cookies: jar.scriptVisibleForHost(url, now) } satisfies Snapshot;
+      return {
+        managed: true,
+        sessionId: sid,
+        cookies: jar.scriptVisibleForHost(url, now),
+        color: COLOR_HEX[store.sessions.get(sid)?.color ?? 'grey'],
+      } satisfies Snapshot;
     case 'cookie:set':
     case 'cookie:import': {
       const values = msg.type === 'cookie:set' ? [msg.value] : msg.values;
@@ -453,6 +674,7 @@ async function handleContent(msg: ContentMessage, sender: chrome.runtime.Message
         await rebuild(sid);
         await store.save();
         notifySession(sid, tabId);
+        broadcastUi();
       }
       return { ok: true };
     }
@@ -461,39 +683,88 @@ async function handleContent(msg: ContentMessage, sender: chrome.runtime.Message
   }
 }
 
-async function handlePopup(msg: PopupMessage): Promise<unknown> {
-  switch (msg.type) {
-    case 'popup:state': {
-      const sid = store.tabs.get(msg.tabId) ?? null;
-      return {
-        sessionId: sid,
-        presets: PRESETS,
-        sessions: [...store.sessions.values()].map((s) => ({
-          ...s,
-          tabs: store.tabsOf(s.id).length,
-          cookies: store.jar(s.id).size,
-        })),
-        diag: snapshotDiag(),
-      };
+function uiState(tabId?: number): UiState {
+  const now = Date.now();
+  const sessions = [...store.sessions.values()]
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((s) => ({
+      ...s,
+      tabCount: store.tabsOf(s.id).length,
+      cookieCount: store.jars.get(s.id)?.all().filter((c) => c.expires === null || c.expires > now).length ?? 0,
+    }));
+  return {
+    sessions,
+    settings: { ...store.settings },
+    tabSessionId: tabId !== undefined ? (store.tabs.get(tabId) ?? null) : null,
+    diag: snapshotDiag(),
+  };
+}
+
+function isOpenableUrl(url: unknown): url is string {
+  return typeof url === 'string' && (/^https?:\/\//.test(url) || url === 'about:blank');
+}
+
+async function handleUi(msg: UiMessage): Promise<UiResult> {
+  try {
+    switch (msg.type) {
+      case 'ui:state':
+        return { ok: true, data: uiState(msg.tabId) };
+      case 'ui:create': {
+        // Check access before creating, so a refused assignment leaves no half-done session.
+        if (typeof msg.assignTabId === 'number') await requireHostAccess((await chrome.tabs.get(msg.assignTabId)).url);
+        const meta = await createSession(msg.name, msg.color);
+        if (typeof msg.assignTabId === 'number') {
+          await assign(msg.assignTabId, meta.id);
+          await reloadIfWeb(msg.assignTabId);
+        }
+        return { ok: true, data: meta };
+      }
+      case 'ui:update':
+        return { ok: true, data: await updateSession(msg.id, { name: msg.name, color: msg.color }) };
+      case 'ui:archive':
+        await archiveSession(msg.id);
+        return { ok: true, data: null };
+      case 'ui:restore':
+        await restoreSession(msg.id);
+        return { ok: true, data: null };
+      case 'ui:delete':
+        await deleteSession(msg.id);
+        return { ok: true, data: null };
+      case 'ui:reset':
+        requireSession(msg.id);
+        await resetSession(msg.id);
+        return { ok: true, data: null };
+      case 'ui:assign':
+        if (typeof msg.tabId !== 'number') throw new Error('Missing tab');
+        if (msg.sessionId) await requireHostAccess((await chrome.tabs.get(msg.tabId)).url);
+        await assign(msg.tabId, msg.sessionId);
+        await reloadIfWeb(msg.tabId);
+        return { ok: true, data: null };
+      case 'ui:openTab':
+        if (!isOpenableUrl(msg.url)) throw new Error('Only http(s) pages can be opened in a session');
+        await requireHostAccess(msg.url);
+        return { ok: true, data: await openTabInSession(msg.sessionId, msg.url) };
+      case 'ui:cookies':
+        requireSession(msg.id);
+        return { ok: true, data: summarizeCookies(store.jars.get(msg.id)?.all() ?? [], Date.now()) };
+      case 'ui:settings':
+        await updateSettings(msg.patch ?? {});
+        return { ok: true, data: { ...store.settings } };
+      case 'ui:permissionsChanged':
+        await syncContentScripts();
+        return { ok: true, data: null };
+      default:
+        return { ok: false, error: 'Unknown message' };
     }
-    case 'popup:assign':
-      await assign(msg.tabId, msg.sessionId);
-      return { ok: true };
-    case 'popup:open':
-      return openTabInSession(msg.sessionId, msg.url);
-    case 'popup:reset':
-      await resetSession(msg.sessionId);
-      return { ok: true };
-    case 'popup:permissionsChanged':
-      await syncContentScripts();
-      return { ok: true };
-    default:
-      return { error: 'unknown message' };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
 /** FR-5: create the tab blank, install rules, then navigate — so the first request already carries the session. */
 async function openTabInSession(sessionId: string, url: string): Promise<{ tabId: number }> {
+  const meta = requireSession(sessionId);
+  if (meta.status !== 'active') throw new Error('Session is archived');
   const tab = await chrome.tabs.create({ url: 'about:blank', active: true });
   if (tab.id === undefined) throw new Error('tab without id');
   await assign(tab.id, sessionId);
@@ -503,14 +774,15 @@ async function openTabInSession(sessionId: string, url: string): Promise<{ tabId
 
 chrome.runtime.onMessage.addListener((msg: { type?: string }, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id || typeof msg?.type !== 'string') return false;
+  if (msg.type === UI_CHANGED) return false; // our own broadcast
   let task: Promise<unknown>;
-  if (msg.type.startsWith('popup:')) {
+  if (msg.type.startsWith('ui:')) {
     if (!isExtensionPage(sender)) return false;
-    task = run(() => handlePopup(msg as PopupMessage));
+    task = run(() => handleUi(msg as UiMessage));
   } else {
     task = run(() => handleContent(msg as ContentMessage, sender));
   }
-  task.then(sendResponse, (e: unknown) => sendResponse({ error: String(e) }));
+  task.then(sendResponse, (e: unknown) => sendResponse({ ok: false, error: String(e) }));
   return true;
 });
 
@@ -520,32 +792,52 @@ function snapshotDiag() {
   return { ...diag, rules: { ...ruleStats, avgMs: ruleStats.updates ? ruleStats.totalMs / ruleStats.updates : 0 } };
 }
 
-/**
- * POC test surface, reachable from Playwright via `serviceWorker.evaluate`.
- * Cookie values are exposed only to the local test harness; never logged.
- */
-const debugApi = {
-  ready: () => run(() => true),
-  assign: (tabId: number, sessionId: string | null) => run(() => assign(tabId, sessionId)),
-  async assignByUrl(urlPart: string, sessionId: string | null): Promise<number> {
-    const tabs = await chrome.tabs.query({});
-    const tab = tabs.find((t) => (t.url ?? t.pendingUrl ?? '').includes(urlPart));
-    if (tab?.id === undefined) throw new Error(`no tab with url containing ${urlPart}`);
-    await run(() => assign(tab.id!, sessionId));
-    return tab.id;
-  },
-  tabIdByUrl: async (urlPart: string) => (await chrome.tabs.query({})).find((t) => (t.url ?? t.pendingUrl ?? '').includes(urlPart))?.id ?? null,
-  openTabInSession: (sessionId: string, url: string) => run(() => openTabInSession(sessionId, url)),
-  reset: (sessionId: string) => run(() => resetSession(sessionId)),
-  state: () =>
-    run(() => ({
-      tabs: Object.fromEntries(store.tabs),
-      jars: Object.fromEntries([...store.jars].map(([k, j]) => [k, j.all().map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, httpOnly: c.httpOnly }))])),
-    })),
-  diag: () => run(snapshotDiag),
-  rules: () => chrome.declarativeNetRequest.getSessionRules(),
-  setInheritOnOpen: (v: boolean) => {
-    settings.inheritOnOpen = v;
-  },
-};
-(globalThis as unknown as { sessionwoy: typeof debugApi }).sessionwoy = debugApi;
+if (__E2E__) {
+  /** Debug sessions are created on demand with id = name (e2e build only). */
+  const ensureDebugSession = async (id: string) => {
+    if (!store.sessions.has(id)) {
+      store.createSession(id, undefined, id);
+      await store.saveDurable();
+    }
+  };
+
+  /**
+   * Test surface, reachable from Playwright via `serviceWorker.evaluate`. Present only in the
+   * e2e build (`extension/dist-e2e`); the release build removes it (ADR 0003).
+   * Cookie values are exposed only to the local test harness; never logged.
+   */
+  const debugApi = {
+    ready: () => run(() => true),
+    assign: (tabId: number, sessionId: string | null) =>
+      run(async () => {
+        if (sessionId) await ensureDebugSession(sessionId);
+        await assign(tabId, sessionId);
+      }),
+    async assignByUrl(urlPart: string, sessionId: string | null): Promise<number> {
+      const tabs = await chrome.tabs.query({});
+      const tab = tabs.find((t) => (t.url ?? t.pendingUrl ?? '').includes(urlPart));
+      if (tab?.id === undefined) throw new Error(`no tab with url containing ${urlPart}`);
+      await debugApi.assign(tab.id, sessionId);
+      return tab.id;
+    },
+    tabIdByUrl: async (urlPart: string) => (await chrome.tabs.query({})).find((t) => (t.url ?? t.pendingUrl ?? '').includes(urlPart))?.id ?? null,
+    openTabInSession: (sessionId: string, url: string) =>
+      run(async () => {
+        await ensureDebugSession(sessionId);
+        return openTabInSession(sessionId, url);
+      }),
+    reset: (sessionId: string) => run(() => resetSession(sessionId)),
+    /** Calls the same handler the popup / side panel use. */
+    ui: (msg: UiMessage) => run(() => handleUi(msg)),
+    state: () =>
+      run(() => ({
+        tabs: Object.fromEntries(store.tabs),
+        jars: Object.fromEntries([...store.jars].map(([k, j]) => [k, j.all().map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, httpOnly: c.httpOnly }))])),
+        groups: Object.fromEntries(store.groups),
+      })),
+    diag: () => run(snapshotDiag),
+    rules: () => chrome.declarativeNetRequest.getSessionRules(),
+    setInheritOnOpen: (v: boolean) => run(() => updateSettings({ inheritOnOpen: v })),
+  };
+  (globalThis as unknown as { sessionwoy: typeof debugApi }).sessionwoy = debugApi;
+}

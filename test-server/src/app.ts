@@ -37,9 +37,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+const FAVICON_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#444"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="#fff" font-family="sans-serif">T</text></svg>';
+
 const INDEX_HTML = `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>SessionWoy test server</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>body{font:14px/1.5 system-ui,sans-serif;margin:24px;max-width:760px}code,pre{background:#f3f3f3;padding:2px 4px}</style>
 </head>
 <body>
@@ -81,6 +85,9 @@ export function buildApp(opts: { logger?: boolean } = {}): FastifyInstance {
   app.get('/', async (_req, reply) => reply.type('text/html; charset=utf-8').send(INDEX_HTML));
 
   app.get('/health', async () => ({ ok: true }));
+
+  // Same-origin favicon, so the extension's favicon marker can compose on top of it.
+  app.get('/favicon.svg', async (_req, reply) => reply.type('image/svg+xml').send(FAVICON_SVG));
 
   app.get<{ Querystring: { user?: string; next?: string } }>('/login', async (req, reply) => {
     const user = req.query.user ?? '';

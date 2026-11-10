@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const EXTENSION_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../extension/dist');
+/** The e2e build (`npm run build:e2e -w extension`): same code as release plus the debug API. */
+export const EXTENSION_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../extension/dist-e2e');
 
 export interface WhoAmI {
   identity: string;
@@ -16,7 +17,14 @@ declare global {
   var sessionwoy: SessionWoyDebug;
 }
 
-/** Shape of the POC debug surface exposed by the service worker as `globalThis.sessionwoy`. */
+/** Result of a `ui:*` message (same shape the popup and side panel receive). */
+export type UiResult<T = unknown> = { ok: true; data: T } | { ok: false; error: string };
+
+/**
+ * Shape of the debug surface exposed by the service worker as `globalThis.sessionwoy`
+ * (e2e build only). Unknown session ids passed to `assign*` / `openTabInSession` are created
+ * on the fly with id = name.
+ */
 export interface SessionWoyDebug {
   rules(): Promise<unknown[]>;
   reset(sessionId: string): Promise<void>;
@@ -25,9 +33,15 @@ export interface SessionWoyDebug {
   assign(tabId: number, sessionId: string | null): Promise<void>;
   tabIdByUrl(urlPart: string): Promise<number | null>;
   openTabInSession(sessionId: string, url: string): Promise<{ tabId: number }>;
-  state(): Promise<{ tabs: Record<string, string>; jars: Record<string, { name: string; value: string }[]> }>;
+  /** Calls the same `ui:*` handler as the popup / side panel. */
+  ui(msg: { type: string } & Record<string, unknown>): Promise<UiResult>;
+  state(): Promise<{
+    tabs: Record<string, string>;
+    jars: Record<string, { name: string; value: string }[]>;
+    groups: Record<string, number>;
+  }>;
   diag(): Promise<Record<string, unknown> & { rules: { avgMs: number; maxMs: number; updates: number } }>;
-  setInheritOnOpen(v: boolean): void;
+  setInheritOnOpen(v: boolean): Promise<void>;
 }
 
 /** The extension handle of the running test (workers: 1), used by gotoJson to wait for heals. */
@@ -78,6 +92,28 @@ export class Ext {
 
   diag() {
     return this.call(() => sessionwoy.diag(), null);
+  }
+
+  /** Sends a `ui:*` message (as the popup / side panel would) and returns the raw result. */
+  uiRaw(msg: { type: string } & Record<string, unknown>): Promise<UiResult> {
+    return this.call((m) => sessionwoy.ui(m), msg);
+  }
+
+  /** Sends a `ui:*` message and returns its data, throwing on `{ ok: false }`. */
+  async ui<T = unknown>(msg: { type: string } & Record<string, unknown>): Promise<T> {
+    const r = await this.uiRaw(msg);
+    if (!r.ok) throw new Error(r.error);
+    return r.data as T;
+  }
+
+  /** Tab-group info of a tab, read inside the service worker. */
+  tabGroup(tabId: number): Promise<{ groupId: number; title?: string; color?: string }> {
+    return this.call(async (id) => {
+      const tab = await chrome.tabs.get(id);
+      if (tab.groupId === undefined || tab.groupId < 0) return { groupId: -1 };
+      const g = await chrome.tabGroups.get(tab.groupId);
+      return { groupId: tab.groupId, title: g.title, color: g.color };
+    }, tabId);
   }
 }
 

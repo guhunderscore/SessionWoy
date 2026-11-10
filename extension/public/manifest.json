@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "SessionWoy (POC)",
+  "name": "SessionWoy",
   "short_name": "SessionWoy",
-  "version": "0.1.0",
-  "description": "Per-tab named cookie sessions — Phase 2 proof of concept.",
+  "version": "0.2.3",
+  "description": "Named cookie sessions per tab: stay logged in to the same site with several accounts in one window.",
   "minimum_chrome_version": "120",
   "icons": {
     "16": "icons/icon-16.png",
@@ -24,8 +24,13 @@
     "webNavigation",
     "storage",
     "alarms",
-    "scripting"
+    "scripting",
+    "tabGroups",
+    "sidePanel"
   ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
   "host_permissions": ["http://localhost:3003/*", "http://127.0.0.1:3003/*"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
   "action": {

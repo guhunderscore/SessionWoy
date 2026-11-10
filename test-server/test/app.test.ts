@@ -55,4 +55,11 @@ describe('test server', () => {
     const res = await app.inject({ url: '/logout' });
     expect(String(res.headers['set-cookie'])).toContain('Max-Age=0');
   });
+
+  it('serves a same-origin SVG favicon referenced by the index page', async () => {
+    const icon = await app.inject({ url: '/favicon.svg' });
+    expect(icon.headers['content-type']).toContain('image/svg+xml');
+    expect(icon.body).toContain('<svg');
+    expect((await app.inject({ url: '/' })).body).toContain('href="/favicon.svg"');
+  });
 });
