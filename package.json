@@ -1,0 +1,30 @@
+{
+  "name": "session-woy",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Per-tab named cookie sessions for Chrome (MV3) — Phase 0–2 proof of concept",
+  "workspaces": [
+    "test-server",
+    "extension",
+    "e2e"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build -w extension && npm run build -w test-server",
+    "test": "npm test -w test-server && npm test -w extension",
+    "test:e2e": "npm run build -w extension && npm test -w e2e",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.14.0",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1"
+  }
+}

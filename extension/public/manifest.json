@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "SessionWoy (POC)",
+  "short_name": "SessionWoy",
+  "version": "0.1.0",
+  "description": "Per-tab named cookie sessions — Phase 2 proof of concept.",
+  "minimum_chrome_version": "120",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess",
+    "webRequest",
+    "cookies",
+    "tabs",
+    "webNavigation",
+    "storage",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": ["http://localhost:3003/*", "http://127.0.0.1:3003/*"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "action": {
+    "default_title": "SessionWoy",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  }
+}

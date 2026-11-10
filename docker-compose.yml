@@ -1,0 +1,29 @@
+name: sessionwoy
+
+services:
+  app:
+    build: ./test-server
+    container_name: app
+    ports:
+      - "127.0.0.1:${TEST_SERVER_PORT:-3003}:3003"
+    environment:
+      PORT: 3003
+    restart: unless-stopped
+
+  # Phase 4 (optional). Not started unless `--profile backend` is given.
+  backend:
+    build: ./backend
+    container_name: backend
+    profiles: ["backend"]
+    ports:
+      - "127.0.0.1:${API_PORT:-3004}:3004"
+    volumes:
+      - session_data:/app/data
+    environment:
+      PORT: 3004
+      DATABASE_PATH: /app/data/sessions.sqlite
+      API_SECRET: ${API_SECRET}
+    restart: unless-stopped
+
+volumes:
+  session_data:

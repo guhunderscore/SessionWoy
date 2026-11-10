@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.jar
+.DS_Store
+test-results/
+playwright-report/
+.pw-profile/
+coverage/
