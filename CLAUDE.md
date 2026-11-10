@@ -2,23 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Language control
-
-To control the language of the AI response, start your message with one of these tags:
-
-- `ID:` the AI responds in **Bahasa Indonesia**
-- `EN:` the AI responds in **English**
-
-Examples:
-
-- `ID: Tolong bantu saya menjelaskan error ketika membuat quote.`
-- `EN: Help me debug a JavaScript modal issue on the quote page.`
-
-If no tag is provided, the default language is **English**.
-
 ## What this is
 
-SessionWoy is a Chrome MV3 extension that gives tabs their own named cookie sessions, so you can be logged in to the same site several times in one window. It does this by **swapping cookies** (simulation), not by isolating real profiles. Phase 0–2 (proof of concept) is complete with a **GO** verdict (2026-11-10); Phase 3 (session manager UI) is next. The requirements live in `docs/adr/SessionWoy — PRD.md`. The design and its go/no-go criteria (G1–G10) are in `docs/adr/0001-cookie-swapping.md`. Results, findings F1–F5 and known limitations are in `docs/adr/0002-poc-result.md`. Read the ADRs before you change the isolation logic. Most of the non-obvious code exists because of a finding recorded there. Abbreviations and project terms are defined in `docs/GLOSARIUM.md` (Bahasa Indonesia); add new terms there when you introduce them.
+SessionWoy is a Chrome MV3 extension that gives tabs their own named cookie sessions, so you can be logged in to the same site several times in one window. It does this by **swapping cookies** (simulation), not by isolating real profiles. Phase 0–2 (proof of concept) is complete with a **GO** verdict (2026-11-10); Phase 3 (session manager UI) is next. The requirements live in `docs/adr/SessionWoy — PRD.md`. The design and its go/no-go criteria (G1–G10) are in `docs/adr/0001-cookie-swapping.md`. Results, findings F1–F5 and known limitations are in `docs/adr/0002-poc-result.md`. Read the ADRs before you change the isolation logic. Most of the non-obvious code exists because of a finding recorded there. Abbreviations and project terms are defined in `docs/GLOSARIUM.md` (in English); add new terms there when you introduce them.
 
 npm workspaces: `extension/` (TS, esbuild), `test-server/` (Fastify, Docker), `e2e/` (Playwright). `backend/` is a Phase 4 placeholder and is deliberately left unbuilt until the gate is final. Node ≥ 22.
 

@@ -4,7 +4,7 @@ Per-tab named cookie sessions for Chrome (Manifest V3): several independent logi
 site side by side in one window. Sessions are **simulated** by cookie swapping, not real profile isolation.
 
 Status: **Phase 0–2 (proof of concept) complete, verdict GO**. See `docs/adr/0002-poc-result.md` for results and limitations.
-Abbreviations and terms (ADR, POC, SPA, DNR, …) are explained in `docs/GLOSARIUM.md` (Bahasa Indonesia).
+Abbreviations and terms (ADR, POC, SPA, DNR, …) are explained in `docs/GLOSARIUM.md`.
 
 ```text
 extension/     MV3 extension (TypeScript strict, esbuild)

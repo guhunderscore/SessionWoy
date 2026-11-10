@@ -1,118 +1,118 @@
-# Glosarium SessionWoy
+# SessionWoy Glossary
 
-Daftar singkatan dan istilah yang dipakai di PRD, ADR, kode, dan diskusi proyek SessionWoy.
-Urutan per kelompok mengikuti topik, bukan abjad.
+Abbreviations and terms used in the PRD, ADRs, code, and project discussions.
+Entries are grouped by topic, not sorted alphabetically.
 
-## 1. Dokumen dan proses
+## 1. Documents and process
 
-| Istilah | Kepanjangan | Arti di proyek ini |
+| Term | Stands for | Meaning in this project |
 | --- | --- | --- |
-| **PRD** | Product Requirements Document | Spesifikasi lengkap produk: tujuan, kebutuhan, arsitektur, rencana fase. File: `docs/adr/SessionWoy — PRD.md` |
-| **ADR** | Architecture Decision Record | Dokumen pendek yang mencatat satu keputusan teknis, alasannya, dan konsekuensinya. Disimpan di `docs/adr/` |
-| **ADR 0001** | — | `docs/adr/0001-cookie-swapping.md`. Keputusan memakai *cookie swapping* dan kriteria lulus/gagal (G1–G10) yang ditetapkan **sebelum** kode ditulis |
-| **ADR 0002** | — | `docs/adr/0002-poc-result.md`. Hasil POC: tabel tes, temuan F1–F6, batasan yang diketahui, matriks kompatibilitas, dan verdict |
-| **POC** | Proof of Concept | Versi minimal untuk membuktikan bahwa ide yang berisiko benar-benar bisa jalan, sebelum membangun produk lengkap. Di sini: apakah cookie bisa dipisah per tab |
-| **MVP** | Minimum Viable Product | Versi terkecil produk yang sudah benar-benar bisa dipakai (definisinya ada di PRD §15) |
-| **Phase 0–6** | — | Tahapan pengerjaan di PRD §11: 0 riset, 1 test server, 2 POC, 3 UI, 4 persistensi & backend, 5 kompatibilitas, 6 fitur tambahan |
-| **Go / No-go gate** | — | Titik keputusan setelah POC: lanjut (GO) atau beralih ke rencana cadangan (NO-GO, PRD §14.1) |
-| **Provisional GO** | — | "Lanjut dengan syarat": tes otomatis lolos, tetapi pengecekan manual belum selesai. Status Phase 2 sebelum 2026-11-10 |
-| **GO** | — | Semua syarat terpenuhi. Status Phase 2 sejak 2026-11-10 |
-| **Fallback** | — | Rencana cadangan bila POC gagal: Chrome dalam Docker atau profil Chrome terpisah (PRD §14.1) |
-| **Compatibility matrix** | Matriks kompatibilitas | Tabel hasil uji SessionWoy di website nyata (ada di ADR 0002) |
+| **PRD** | Product Requirements Document | The full product specification: goals, requirements, architecture, phase plan. File: `docs/adr/SessionWoy — PRD.md` |
+| **ADR** | Architecture Decision Record | A short document recording one technical decision, why it was made, and its consequences. Stored in `docs/adr/` |
+| **ADR 0001** | — | `docs/adr/0001-cookie-swapping.md`. The decision to use *cookie swapping* and the pass/fail criteria (G1–G10), fixed **before** any code was written |
+| **ADR 0002** | — | `docs/adr/0002-poc-result.md`. POC results: test table, findings F1–F6, known limitations, compatibility matrix, and verdict |
+| **POC** | Proof of Concept | A minimal build to prove that a risky idea actually works before building the full product. Here: can cookies be separated per tab? |
+| **MVP** | Minimum Viable Product | The smallest version of the product that is actually usable (defined in PRD §15) |
+| **Phase 0–6** | — | Delivery stages in PRD §11: 0 research, 1 test server, 2 POC, 3 UI, 4 persistence & backend, 5 compatibility, 6 optional enhancements |
+| **Go / No-go gate** | — | Decision point after the POC: continue (GO) or switch to the fallback (NO-GO, PRD §14.1) |
+| **Provisional GO** | — | "Continue with conditions": automated tests passed, but manual checks were not finished yet. Phase 2 status before 2026-11-10 |
+| **GO** | — | All conditions met. Phase 2 status since 2026-11-10 |
+| **Fallback** | — | Backup plan if the POC fails: Chrome in Docker, or separate Chrome profiles (PRD §14.1) |
+| **Compatibility matrix** | — | Table of SessionWoy test results on real websites (in ADR 0002) |
 
-## 2. Kode penomoran
+## 2. Numbering codes
 
-| Kode | Arti | Lokasi |
+| Code | Meaning | Location |
 | --- | --- | --- |
-| **G-n** (G1–G10) | Kriteria go/no-go | ADR 0001 |
-| **S-n** (S1–S15) | Skenario tes end-to-end; satu-satu cocok dengan tabel hasil | `e2e/tests/poc.spec.ts`, ADR 0002 |
-| **F-n** (F1–F6) | Temuan teknis selama POC (misalnya F3 = race redirect, F6 = bug pewarisan sesi) | ADR 0002 |
-| **FR-n** | *Functional Requirement*, kebutuhan fungsional | PRD §5 |
-| **NFR** | *Non-Functional Requirement*, target kualitas (kecepatan, keamanan, keandalan) | PRD §6 |
-| **G1, G2, …** dalam PRD | *Goal*, tujuan produk | PRD §2.1 (berbeda dari G-n di ADR 0001) |
+| **G-n** (G1–G10) | Go/no-go criteria | ADR 0001 |
+| **S-n** (S1–S15) | End-to-end test scenarios; one-to-one with the results table | `e2e/tests/poc.spec.ts`, ADR 0002 |
+| **F-n** (F1–F6) | Technical findings during the POC (e.g. F3 = redirect race, F6 = session inheritance bug) | ADR 0002 |
+| **FR-n** | Functional Requirement | PRD §5 |
+| **NFR** | Non-Functional Requirement: quality targets (speed, security, reliability) | PRD §6 |
+| **G1, G2, …** in the PRD | Product goals | PRD §2.1 (not the same as G-n in ADR 0001) |
 
-## 3. Istilah khusus SessionWoy
+## 3. SessionWoy-specific terms
 
-| Istilah | Arti |
+| Term | Meaning |
 | --- | --- |
-| **Sesi (session)** | Satu set cookie bernama (misalnya *Customer*) yang dipakai oleh satu atau beberapa tab |
-| **Managed tab** | Tab yang sudah ditetapkan ke sebuah sesi. Cookie-nya diatur oleh SessionWoy |
-| **Unmanaged tab** | Tab biasa tanpa sesi. Berperilaku persis seperti Chrome normal |
-| **Shared jar** | *Cookie jar* bawaan Chrome yang dipakai bersama oleh semua tab biasa. Tab dengan sesi tidak pernah membaca atau menulis ke sini |
-| **Session jar** | *Cookie jar* milik satu sesi, disimpan oleh extension |
-| **Cookie swapping** | Teknik inti SessionWoy: mengganti header `Cookie` di setiap request dengan cookie milik sesi tab tersebut |
-| **Presets (A/B/C)** | Sesi tetap di POC: A = Customer, B = Provider, C = Admin. Diganti sesi buatan pengguna di Phase 3 |
-| **Inheritance (pewarisan sesi)** | Tab baru yang dibuka dari link di tab bersesi otomatis ikut sesi tab sumbernya (default: aktif) |
-| **Stale request** | Request yang terkirim dengan cookie lama, karena aturan cookie belum sempat diperbarui (temuan F3) |
-| **Heal** | Mekanisme yang memuat ulang navigasi GET yang terkirim dengan cookie lama, supaya halaman memakai cookie terbaru |
-| **Race redirect** | Kondisi saat server mengirim `Set-Cookie` pada redirect `302`, lalu Chrome langsung mengikuti redirect sebelum aturan cookie diperbarui |
-| **Snapshot cache** | Salinan cookie sesi (yang boleh dibaca JavaScript) di `sessionStorage`, supaya `document.cookie` langsung punya jawaban saat halaman di-reload |
-| **Debug API** | Fungsi khusus pengujian di service worker (`globalThis.sessionwoy`). Harus dihapus atau dibatasi sebelum rilis |
+| **Session** | A named set of cookies (e.g. *Customer*) used by one or more tabs |
+| **Managed tab** | A tab that has been assigned to a session. SessionWoy controls its cookies |
+| **Unmanaged tab** | A normal tab with no session. Behaves exactly like normal Chrome |
+| **Shared jar** | Chrome's built-in cookie jar, shared by all normal tabs. Managed tabs never read from or write to it |
+| **Session jar** | The cookie jar belonging to one session, stored by the extension |
+| **Cookie swapping** | SessionWoy's core technique: replacing the `Cookie` header of every request with the cookies of that tab's session |
+| **Presets (A/B/C)** | Fixed sessions in the POC: A = Customer, B = Provider, C = Admin. Replaced by user-created sessions in Phase 3 |
+| **Inheritance** | A new tab opened from a link in a managed tab automatically joins the source tab's session (on by default) |
+| **Stale request** | A request sent with old cookies because the cookie rules had not been updated yet (finding F3) |
+| **Heal** | The mechanism that re-issues a GET navigation sent with old cookies, so the page loads with the current cookies |
+| **Redirect race** | When a server sends `Set-Cookie` on a `302` redirect and Chrome follows the redirect before the cookie rules are updated |
+| **Snapshot cache** | A copy of the session's script-visible cookies in `sessionStorage`, so `document.cookie` has an immediate answer when a page reloads |
+| **Debug API** | Test-only functions in the service worker (`globalThis.sessionwoy`). Must be removed or gated before release |
 
-## 4. Web dan browser
+## 4. Web and browser
 
-| Istilah | Kepanjangan | Arti |
+| Term | Stands for | Meaning |
 | --- | --- | --- |
-| **SPA** | Single-Page Application | Website yang dimuat sekali, lalu berpindah "halaman" lewat JavaScript tanpa reload penuh. Contoh: Gmail, saucedemo.com |
-| **PWA** | Progressive Web App | Website yang bisa di-"install" seperti aplikasi; hampir selalu memakai Service Worker |
-| **Cookie** | — | Data kecil dari website yang disimpan browser dan dikirim kembali di setiap request (misalnya status login) |
-| **Cookie jar** | — | "Toples" tempat browser menyimpan cookie. Chrome biasanya hanya punya satu per profil |
-| **Set-Cookie** | — | Header dari server yang menyuruh browser menyimpan cookie, misalnya setelah login |
-| **`document.cookie`** | — | Cara JavaScript di halaman membaca dan menulis cookie |
-| **HttpOnly** | — | Cookie yang tidak bisa dibaca JavaScript, hanya dikirim ke server. Biasanya cookie login |
-| **Secure** | — | Cookie yang hanya dikirim lewat HTTPS |
-| **SameSite** | — | Aturan kapan cookie boleh ikut terkirim dari situs lain: `Strict`, `Lax`, atau `None` |
-| **Max-Age / Expires** | — | Masa berlaku cookie. `Max-Age=0` berarti cookie dihapus |
-| **localStorage / sessionStorage** | — | Penyimpanan data di browser selain cookie. **Tidak** dipisah per sesi oleh SessionWoy (batasan no. 4) |
-| **IndexedDB / CacheStorage** | — | Penyimpanan browser lain yang lebih besar. Juga tidak dipisah per sesi |
-| **Origin** | — | Kombinasi skema + host + port, misalnya `http://localhost:3000` |
-| **Redirect / 302** | — | Respons server yang menyuruh browser pindah ke URL lain |
-| **CSRF** | Cross-Site Request Forgery | Serangan yang memalsukan request dari situs lain. Aplikasi Rails melindunginya dengan token CSRF |
-| **OAuth** | — | Login lewat pihak ketiga ("Login dengan Google"), biasanya lewat popup atau redirect |
-| **CHIPS** | Cookies Having Independent Partitioned State | Cookie yang dipisah per situs induk. Belum didukung di POC |
-| **PSL** | Public Suffix List | Daftar domain publik (seperti `.co.id`) agar cookie tidak dipasang untuk seluruh domain publik. Belum dipakai di POC |
-| **Loopback (127.0.0.1)** | — | Alamat yang hanya bisa diakses dari komputer sendiri, tidak dari jaringan |
+| **SPA** | Single-Page Application | A website that loads once and then switches "pages" with JavaScript, without full reloads. Examples: Gmail, saucedemo.com |
+| **PWA** | Progressive Web App | A website that can be "installed" like an app; almost always uses a Service Worker |
+| **Cookie** | — | A small piece of data from a website that the browser stores and sends back with each request (e.g. login state) |
+| **Cookie jar** | — | Where the browser stores cookies. Chrome normally has one per profile |
+| **Set-Cookie** | — | Response header in which the server tells the browser to store a cookie, e.g. after login |
+| **`document.cookie`** | — | How JavaScript on a page reads and writes cookies |
+| **HttpOnly** | — | A cookie that JavaScript cannot read; it is only sent to the server. Usually the login cookie |
+| **Secure** | — | A cookie that is only sent over HTTPS |
+| **SameSite** | — | Rule for when a cookie may be sent from another site: `Strict`, `Lax`, or `None` |
+| **Max-Age / Expires** | — | A cookie's lifetime. `Max-Age=0` deletes the cookie |
+| **localStorage / sessionStorage** | — | Browser storage other than cookies. **Not** separated per session by SessionWoy (limitation 4) |
+| **IndexedDB / CacheStorage** | — | Larger browser storage. Also not separated per session |
+| **Origin** | — | Scheme + host + port, e.g. `http://localhost:3000` |
+| **Redirect / 302** | — | A server response that tells the browser to go to another URL |
+| **CSRF** | Cross-Site Request Forgery | An attack that forges requests from another site. Rails apps protect against it with CSRF tokens |
+| **OAuth** | — | Login through a third party ("Sign in with Google"), usually via a popup or redirect |
+| **CHIPS** | Cookies Having Independent Partitioned State | Cookies partitioned per top-level site. Not supported in the POC |
+| **PSL** | Public Suffix List | List of public domains (such as `.co.id`) so cookies cannot be set for a whole public domain. Not used in the POC |
+| **Loopback (127.0.0.1)** | — | An address reachable only from your own computer, not from the network |
 
-## 5. Chrome Extension
+## 5. Chrome extensions
 
-| Istilah | Kepanjangan | Arti |
+| Term | Stands for | Meaning |
 | --- | --- | --- |
-| **MV3** | Manifest Version 3 | Format extension Chrome yang berlaku sekarang. Aturannya lebih ketat; extension tidak bisa lagi menahan request secara langsung |
-| **Manifest** | — | File `manifest.json` yang mendeskripsikan extension: nama, izin, icon, script |
-| **DNR** | declarativeNetRequest | API Chrome untuk mengubah request lewat aturan yang didaftarkan ke browser. Dipakai untuk mengganti header `Cookie` per tab |
-| **Session rules** | — | Aturan DNR yang hidup selama browser berjalan (hilang saat browser di-restart) |
-| **webRequest** | — | API Chrome untuk *mengamati* request dan respons. Dipakai untuk membaca `Set-Cookie` |
-| **Service Worker (SW)** | — | Skrip yang berjalan di latar belakang. Ada dua jenis: (1) milik **extension**, yaitu otak SessionWoy; (2) milik **website**, yang request-nya tidak terikat ke tab sehingga belum bisa dipisah per sesi (batasan no. 1) |
-| **Content script** | — | Skrip extension yang disisipkan ke halaman web |
-| **MAIN world / ISOLATED world** | — | MAIN = konteks JavaScript milik halaman; ISOLATED = konteks terpisah milik extension. SessionWoy memakai keduanya untuk `document.cookie` |
-| **Popup** | — | Jendela kecil yang muncul saat ikon extension diklik |
-| **Badge** | — | Teks kecil berwarna di atas ikon extension (misalnya nama sesi) |
-| **Host permission** | — | Izin extension untuk mengakses situs tertentu. Diberikan per situs lewat tombol *Grant access to this site* |
-| **`chrome.storage.session`** | — | Penyimpanan extension di memori; hilang saat extension di-reload atau browser di-restart (batasan no. 8) |
-| **Unpacked extension** | — | Extension yang dimuat langsung dari folder (`extension/dist`) lewat *Developer mode*, bukan dari Chrome Web Store |
+| **MV3** | Manifest Version 3 | The current Chrome extension format. Stricter rules; extensions can no longer block requests directly |
+| **Manifest** | — | The `manifest.json` file that describes the extension: name, permissions, icons, scripts |
+| **DNR** | declarativeNetRequest | Chrome API that changes requests through rules registered with the browser. Used to replace the `Cookie` header per tab |
+| **Session rules** | — | DNR rules that live while the browser runs (gone after a browser restart) |
+| **webRequest** | — | Chrome API to *observe* requests and responses. Used to read `Set-Cookie` |
+| **Service Worker (SW)** | — | A background script. Two kinds: (1) the **extension's**, which is SessionWoy's brain; (2) a **website's**, whose requests are not tied to a tab and so are not yet separated per session (limitation 1) |
+| **Content script** | — | An extension script injected into a web page |
+| **MAIN world / ISOLATED world** | — | MAIN = the page's own JavaScript context; ISOLATED = a separate context owned by the extension. SessionWoy uses both for `document.cookie` |
+| **Popup** | — | The small window that opens when you click the extension icon |
+| **Badge** | — | Small colored text on the extension icon (e.g. the session name) |
+| **Host permission** | — | The extension's permission to access a specific site. Granted per site with *Grant access to this site* |
+| **`chrome.storage.session`** | — | In-memory extension storage; cleared when the extension reloads or the browser restarts (limitation 8) |
+| **Unpacked extension** | — | An extension loaded directly from a folder (`extension/dist`) in *Developer mode*, not from the Chrome Web Store |
 
-## 6. Tooling dan infrastruktur
+## 6. Tooling and infrastructure
 
-| Istilah | Kepanjangan | Arti |
+| Term | Stands for | Meaning |
 | --- | --- | --- |
-| **E2E** | End-to-End test | Tes yang menjalankan browser sungguhan beserta extension-nya, dari awal sampai akhir (folder `e2e/`) |
-| **Unit test** | — | Tes kecil untuk satu fungsi atau modul, tanpa browser (Vitest) |
-| **Playwright** | — | Alat otomasi browser untuk tes E2E |
-| **Vitest** | — | Framework unit test untuk TypeScript |
-| **esbuild** | — | Alat build yang menggabungkan kode TypeScript extension ke folder `dist/` |
-| **Fastify** | — | Framework web Node.js untuk test server dan backend |
-| **Docker / Docker Compose** | — | Menjalankan layanan dalam container. Service `app` = test server (port 3003), `backend` = API Phase 4 (port 3004) |
-| **CDP** | Chrome DevTools Protocol | Jalur kontrol Chrome yang dipakai tes otomatis, misalnya untuk mematikan service worker (S10) |
-| **npm workspaces** | — | Satu repo berisi beberapa paket: `extension`, `test-server`, `e2e` |
-| **SQLite** | — | Database berbasis file, direncanakan untuk backend Phase 4 |
+| **E2E** | End-to-End test | A test that runs a real browser with the extension, from start to finish (folder `e2e/`) |
+| **Unit test** | — | A small test for one function or module, without a browser (Vitest) |
+| **Playwright** | — | Browser automation tool used for the E2E tests |
+| **Vitest** | — | Unit test framework for TypeScript |
+| **esbuild** | — | Build tool that bundles the extension's TypeScript into `dist/` |
+| **Fastify** | — | Node.js web framework for the test server and the backend |
+| **Docker / Docker Compose** | — | Runs services in containers. Service `app` = test server (port 3003), `backend` = Phase 4 API (port 3004) |
+| **CDP** | Chrome DevTools Protocol | Chrome's control channel used by automated tests, e.g. to stop the service worker (S10) |
+| **npm workspaces** | — | One repo containing several packages: `extension`, `test-server`, `e2e` |
+| **SQLite** | — | File-based database, planned for the Phase 4 backend |
 
-## 7. Keamanan dan pengukuran
+## 7. Security and measurement
 
-| Istilah | Kepanjangan | Arti |
+| Term | Stands for | Meaning |
 | --- | --- | --- |
-| **AES-256-GCM** | Advanced Encryption Standard, 256-bit, Galois/Counter Mode | Algoritma enkripsi yang direncanakan untuk menyimpan cookie dengan aman (Phase 4) |
-| **PBKDF2** | Password-Based Key Derivation Function 2 | Cara membuat kunci enkripsi dari passphrase pengguna |
-| **Ciphertext** | — | Data yang sudah terenkripsi. Backend Phase 4 hanya menyimpan ciphertext |
-| **p50 / p95** | Persentil ke-50 / ke-95 | p95 = 95% request lebih cepat dari angka ini. Dipakai untuk mengukur tambahan latensi (S14) |
-| **Latency** | — | Waktu tunda sebuah request |
-| **Stress test** | — | Tes beban dengan sangat banyak request sekaligus (S2: 10.000 request per tab) |
+| **AES-256-GCM** | Advanced Encryption Standard, 256-bit, Galois/Counter Mode | Encryption algorithm planned for storing cookies securely (Phase 4) |
+| **PBKDF2** | Password-Based Key Derivation Function 2 | Derives an encryption key from the user's passphrase |
+| **Ciphertext** | — | Encrypted data. The Phase 4 backend stores ciphertext only |
+| **p50 / p95** | 50th / 95th percentile | p95 = 95% of requests are faster than this value. Used to measure added latency (S14) |
+| **Latency** | — | The delay of a request |
+| **Stress test** | — | A load test with a very large number of requests at once (S2: 10,000 requests per tab) |
