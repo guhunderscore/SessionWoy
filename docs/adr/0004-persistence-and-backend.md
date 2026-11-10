@@ -1,6 +1,6 @@
 # ADR 0004 — Encrypted persistence, backup, tab restore and local backend (Phase 4)
 
-- Status: Accepted (manual check in Chrome pending)
+- Status: Accepted (automated suite and manual check in Chrome 157 passed, 2026-11-10)
 - Date: 2026-11-10
 - Depends on: ADR 0002 (limitation 8: logins lost on restart), ADR 0003 (UI)
 - Requirements: PRD FR-15 … FR-21, §7.3, §10.3, §13
@@ -121,7 +121,7 @@ delay startup.
 | Full suite S1–S27, twice | ✅ 27/27 twice |
 | Backend container: health 200; no secret 401; website Origin 403; foreign Host 421 | ✅ |
 | Release build: no debug API, no loopback pre-grant | ✅ |
-| Manual check in Chrome 157 | ⏳ pending |
+| Manual check in Chrome 157 (user): restart + unlock, tab restore, backup export/import, backend connected → offline → back | ✅ all passed |
 
 Also fixed on the way: S7 called `fetch()` inside a duplicated tab that the extension reloads by design
 (F6); the test now navigates fresh.
