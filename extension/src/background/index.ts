@@ -73,7 +73,13 @@ const diag = {
   staleRequests: 0,
   setCookieDiscardedStale: 0,
   healed: 0,
+  /** Stale iframe navigations re-issued inside their frame (F10). Included in `healed`. */
+  healedFrames: 0,
   healSkipped: 0,
+  /** Service Worker registrations refused in session frames (F9). */
+  swBlocked: 0,
+  /** Session frames that found and unregistered a site Service Worker (F9). */
+  swUnregistered: 0,
   /** Tabs that rejoined their session after a browser restart (FR-17). */
   restoredTabsFromMarker: 0,
 };
@@ -647,9 +653,9 @@ function captureSetCookies(
   staleNow: boolean,
 ): string | null {
   diag.setCookieHeadersSeen += values.length;
-  // A stale top-level GET is being re-issued by heal(); its cookies (e.g. a fresh
-  // "anonymous" session) must not overwrite what the previous hop just set.
-  if ((staleNow || staleRequests.has(d.requestId)) && d.type === 'main_frame' && d.method === 'GET') {
+  // A stale GET navigation (tab or iframe) is being re-issued by heal(); its cookies (e.g. a
+  // fresh "anonymous" session) must not overwrite what the previous hop just set.
+  if ((staleNow || staleRequests.has(d.requestId)) && isNavigation(d.type) && d.method === 'GET') {
     diag.setCookieDiscardedStale += values.length;
     return null;
   }
@@ -717,26 +723,51 @@ chrome.webRequest.onHeadersReceived.addListener(
 
 /** requestId -> current hop was sent with stale cookies (requestId is shared across redirect hops). */
 const staleRequests = new Set<string>();
-const heals = new Map<number, { url: string; n: number; at: number }>();
+/** Loop guard per tab ("<tabId>") or iframe ("<tabId>:<frameId>"). */
+const heals = new Map<string, { url: string; n: number; at: number }>();
+/** Iframes ("<tabId>:<frameId>") whose current navigation went out stale (F10). */
+const pendingFrameHeals = new Set<string>();
+
+const isNavigation = (type: string): boolean => type === 'main_frame' || type === 'sub_frame';
 
 function isFresh(sent: string, jarHeaderSame: string, jarHeaderCross: string): boolean {
   return sent === jarHeaderSame || sent === jarHeaderCross;
 }
 
-function heal(tabId: number, url: string): void {
+/**
+ * Re-issues a stale GET navigation once the rules are current: the tab via tabs.update, an iframe
+ * (F10) by navigating its committed stale document from inside (needs host access to that
+ * document; if that fails, the frame keeps the stale load).
+ */
+function heal(tabId: number, frameId: number, url: string): void {
   // Queued behind the rule update that made this request stale.
   void run(async () => {
     if (!store.tabs.has(tabId)) return;
+    const key = frameId === 0 ? String(tabId) : `${tabId}:${frameId}`;
     const now = Date.now();
-    const h = heals.get(tabId);
+    const h = heals.get(key);
     const repeat = h && h.url === url && now - h.at < 5_000;
     if (repeat && h.n >= 2) {
       diag.healSkipped++;
       return;
     }
-    heals.set(tabId, { url, n: repeat ? h.n + 1 : 1, at: now });
-    diag.healed++;
-    await chrome.tabs.update(tabId, { url }).catch(() => undefined);
+    heals.set(key, { url, n: repeat ? h.n + 1 : 1, at: now });
+    if (heals.size > 500) heals.clear();
+    if (frameId === 0) {
+      diag.healed++;
+      await chrome.tabs.update(tabId, { url }).catch(() => undefined);
+      return;
+    }
+    const ok = await chrome.scripting
+      .executeScript({ target: { tabId, frameIds: [frameId] }, func: (u: string) => location.replace(u), args: [url] })
+      .then(() => true)
+      .catch(() => false);
+    if (ok) {
+      diag.healed++;
+      diag.healedFrames++;
+    } else {
+      diag.healSkipped++;
+    }
   });
 }
 
@@ -752,18 +783,26 @@ function checkStale(d: SendDetails, sent: string): void {
   if (d.type === 'main_frame') diag.mainFrameChecks++;
   // The third-party (SameSite=None only) rule variant never applies to main_frame.
   const cross = d.type === 'main_frame' ? same : jar.cookieHeaderFor(url, now, 'cross-site');
+  const frameKey = `${d.tabId}:${d.frameId}`;
   if (isFresh(sent, same, cross)) {
     staleRequests.delete(d.requestId);
+    if (d.type === 'sub_frame') pendingFrameHeals.delete(frameKey); // a later hop caught up
     return;
   }
   staleRequests.add(d.requestId);
   if (staleRequests.size > 5_000) staleRequests.clear();
   diag.staleRequests++;
+  if (d.type === 'sub_frame') {
+    // F10: healed once the stale document has committed (see webNavigation.onCommitted below).
+    if (d.method === 'GET') pendingFrameHeals.add(frameKey);
+    if (pendingFrameHeals.size > 500) pendingFrameHeals.clear();
+    return;
+  }
   if (d.type !== 'main_frame') return; // subresources cannot be re-issued (documented limitation)
   const names = (s: string) => (s ? s.split('; ').map((p) => p.split('=')[0] ?? '') : []);
   diag.mainFrameMismatches.push({ url: d.url.split('?')[0] ?? '', sentNames: names(sent), expectedNames: names(same), at: now });
   if (diag.mainFrameMismatches.length > 50) diag.mainFrameMismatches.shift();
-  if (d.method === 'GET') heal(d.tabId, d.url);
+  if (d.method === 'GET') heal(d.tabId, 0, d.url);
 }
 
 chrome.webRequest.onSendHeaders.addListener(
@@ -778,6 +817,15 @@ chrome.webRequest.onSendHeaders.addListener(
   { urls: ['<all_urls>'] },
   ['requestHeaders', 'extraHeaders'],
 );
+
+/**
+ * F10: an iframe navigation that left with stale cookies is re-issued after its document commits.
+ * Navigating the frame earlier raced with that commit (the replace was sometimes lost).
+ */
+chrome.webNavigation.onCommitted.addListener((d) => {
+  if (d.frameId === 0 || !pendingFrameHeals.delete(`${d.tabId}:${d.frameId}`)) return;
+  heal(d.tabId, d.frameId, d.url);
+});
 
 const forgetRequest = (d: { requestId: string }) => void staleRequests.delete(d.requestId);
 chrome.webRequest.onCompleted.addListener(forgetRequest, { urls: ['<all_urls>'] });
@@ -987,6 +1035,10 @@ async function handleContent(msg: ContentMessage, sender: chrome.runtime.Message
       }
       return { ok: true };
     }
+    case 'sw:event':
+      if (msg.action === 'blocked') diag.swBlocked++;
+      else if (msg.action === 'unregistered') diag.swUnregistered++;
+      return { ok: true };
     default:
       return { error: 'unknown message' };
   }

@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import { compatRoutes } from './compat.js';
 
 /**
  * Deterministic test server for the SessionWoy POC.
@@ -141,6 +142,8 @@ export function buildApp(opts: { logger?: boolean } = {}): FastifyInstance {
     if (delay) await sleep(delay);
     return { id: req.query.id ?? null, identity: before };
   });
+
+  compatRoutes(app); // Phase 5 compatibility pages (Service Worker, iframe, OAuth popup, download)
 
   return app;
 }

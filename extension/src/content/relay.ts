@@ -112,6 +112,7 @@ function onRelay(e: Event): void {
   }
   if (msg.type === 'set' && typeof msg.value === 'string') void send({ type: 'cookie:set', value: msg.value });
   else if (msg.type === 'import' && Array.isArray(msg.values)) void send({ type: 'cookie:import', values: msg.values });
+  else if (msg.type === 'sw' && (msg.action === 'blocked' || msg.action === 'unregistered')) void send({ type: 'sw:event', action: msg.action });
 }
 
 document.addEventListener(TO_RELAY, onRelay);

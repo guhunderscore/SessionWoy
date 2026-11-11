@@ -84,9 +84,12 @@ been logged. The only code path able to produce it was the duplicate heuristic (
 
 1. **Site Service Worker / tab-less requests** (`tabId = -1`) use the shared jar. PWAs and SPAs that
    fetch through a Service Worker will not be isolated. Likely the biggest real-site risk.
+   *Update 2026-11-11 (ADR 0005, F9):* confirmed, and worse (a session login leaked into normal tabs).
+   Site Service Workers are now switched off in session tabs; a first-load window remains.
 2. **Healing is GET-only for top-level navigations.** A stale POST/307/308 hop, stale `sub_frame`
    navigations and stale subresource requests (≈ 1 ms window right after a cookie change) are
    detected but not re-issued. A stale GET hop is executed twice on the server.
+   *Update 2026-11-11 (ADR 0005, F10):* stale `sub_frame` GETs are now healed too.
 3. **`document.cookie` on the first document of an origin in a tab**: until the async snapshot
    arrives, reads are native and writes reach the shared jar (they are then imported into the
    session). Later loads use a synchronous `sessionStorage` cache. `cookieStore` API not virtualized.

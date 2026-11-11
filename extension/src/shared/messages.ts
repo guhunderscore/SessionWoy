@@ -22,16 +22,24 @@ export type Snapshot =
 /** sessionStorage key holding the tab's restore marker (top frame). */
 export const TAB_MARKER_KEY = '__sessionwoy_tab';
 
+/** sessionStorage key: when a session frame last reloaded to leave a site Service Worker (loop guard, F9). */
+export const SW_RELOAD_KEY = '__sessionwoy_sw_reload';
+
+/** What the Service Worker guard did in a session frame (F9). Counted in diagnostics only. */
+export type SwAction = 'blocked' | 'unregistered';
+
 /** MAIN world -> relay. */
 export type MainToRelay =
   | { type: 'set'; value: string }
-  | { type: 'import'; values: string[] };
+  | { type: 'import'; values: string[] }
+  | { type: 'sw'; action: SwAction };
 
 /** Content scripts -> service worker. */
 export type ContentMessage =
   | { type: 'snapshot:get' }
   | { type: 'cookie:set'; value: string }
   | { type: 'cookie:import'; values: string[] }
+  | { type: 'sw:event'; action: SwAction }
   /** A restored tab reports the marker it had before the browser restart (FR-17). */
   | { type: 'tab:restore'; marker: string };
 

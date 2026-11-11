@@ -9,9 +9,12 @@
  *  - unknown:   (first document of an origin in a tab, before the async answer)
  *               native behavior; writes are remembered and imported into the
  *               session if the tab turns out to be managed. Documented leak window.
+ *
+ * It also keeps site Service Workers out of session frames (F9, ADR 0005): requests a Service
+ * Worker makes have no tab id, so they would use (and write to) Chrome's shared cookie jar.
  */
 import { CookieJar } from '../shared/cookieJar.js';
-import { SNAPSHOT_CACHE_KEY, TO_MAIN, TO_RELAY, type MainToRelay, type Snapshot } from '../shared/messages.js';
+import { SNAPSHOT_CACHE_KEY, SW_RELOAD_KEY, TO_MAIN, TO_RELAY, type MainToRelay, type Snapshot } from '../shared/messages.js';
 
 (() => {
   const desc = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
@@ -27,7 +30,43 @@ import { SNAPSHOT_CACHE_KEY, TO_MAIN, TO_RELAY, type MainToRelay, type Snapshot 
     document.dispatchEvent(new CustomEvent(TO_RELAY, { detail: JSON.stringify(msg) }));
   };
 
+  // ---- Service Worker guard (F9)
+  let onDecided: (() => void) | null = null;
+  /** Resolves once managed/unmanaged is known (or after 3 s, so unmanaged pages never hang). */
+  const decided = new Promise<void>((resolve) => {
+    onDecided = resolve;
+    setTimeout(resolve, 3_000);
+  });
+  let swEvicted = false;
+
+  /**
+   * A session frame must not be controlled by a site Service Worker. Unregisters every
+   * registration of this origin (this also affects normal tabs of the site until it registers
+   * again) and, if this document itself came through the worker, loads it again directly.
+   */
+  const evictServiceWorkers = async (): Promise<void> => {
+    if (swEvicted) return;
+    swEvicted = true;
+    const container = typeof navigator.serviceWorker === 'object' ? navigator.serviceWorker : undefined;
+    if (!container) return; // insecure context: no Service Workers
+    const regs = await container.getRegistrations().catch(() => []);
+    if (!regs.length && !container.controller) return;
+    await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
+    toRelay({ type: 'sw', action: 'unregistered' });
+    if (!container.controller) return;
+    try {
+      // Loop guard: at most one reload per 10 s in this frame.
+      if (Date.now() - Number(sessionStorage.getItem(SW_RELOAD_KEY) ?? 0) < 10_000) return;
+      sessionStorage.setItem(SW_RELOAD_KEY, String(Date.now()));
+    } catch {
+      return; // storage disabled: no loop guard, so no reload
+    }
+    location.reload();
+  };
+
   const adopt = (snap: Snapshot, cache: boolean): void => {
+    onDecided?.();
+    if (snap.managed) void evictServiceWorkers();
     if (snap.managed) {
       state = { managed: true, sessionId: snap.sessionId, jar: new CookieJar(snap.cookies) };
       if (pendingUnknownWrites.length) {
@@ -75,6 +114,24 @@ import { SNAPSHOT_CACHE_KEY, TO_MAIN, TO_RELAY, type MainToRelay, type Snapshot 
       nativeSet.call(this, value);
     },
   });
+
+  // Session frames may not register a Service Worker. While the answer is unknown, wait for it.
+  const SWC = typeof ServiceWorkerContainer === 'function' ? ServiceWorkerContainer : undefined;
+  if (SWC) {
+    const nativeRegister = SWC.prototype.register;
+    SWC.prototype.register = function register(
+      this: ServiceWorkerContainer,
+      ...args: Parameters<ServiceWorkerContainer['register']>
+    ): Promise<ServiceWorkerRegistration> {
+      return decided.then(() => {
+        if (state?.managed) {
+          toRelay({ type: 'sw', action: 'blocked' });
+          throw new DOMException('Service Workers are disabled in SessionWoy session tabs', 'SecurityError');
+        }
+        return nativeRegister.apply(this, args);
+      });
+    };
+  }
 
   document.addEventListener(TO_MAIN, (e) => {
     const detail = (e as CustomEvent<unknown>).detail;

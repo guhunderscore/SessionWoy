@@ -100,7 +100,8 @@ Entries are grouped by topic, not sorted alphabetically.
 | **DNR** | declarativeNetRequest | Chrome API that changes requests through rules registered with the browser. Used to replace the `Cookie` header per tab |
 | **Session rules** | — | DNR rules that live while the browser runs (gone after a browser restart) |
 | **webRequest** | — | Chrome API to *observe* requests and responses. Used to read `Set-Cookie` |
-| **Service Worker (SW)** | — | A background script. Two kinds: (1) the **extension's**, which is SessionWoy's brain; (2) a **website's**, whose requests are not tied to a tab and so are not yet separated per session (limitation 1) |
+| **Service Worker (SW)** | — | A background script. Two kinds: (1) the **extension's**, which is SessionWoy's brain; (2) a **website's**, whose requests are not tied to a tab and so cannot be separated per session. Since Phase 5, website Service Workers are switched off in session tabs (F9, ADR 0005) |
+| **Healing** | — | Re-issuing a navigation that left with stale cookies, after the rules caught up (F3 for tabs, F10 for iframes) |
 | **Content script** | — | An extension script injected into a web page |
 | **MAIN world / ISOLATED world** | — | MAIN = the page's own JavaScript context; ISOLATED = a separate context owned by the extension. SessionWoy uses both for `document.cookie` |
 | **Popup** | — | The small window that opens when you click the extension icon. In SessionWoy: quick actions for the current tab |
